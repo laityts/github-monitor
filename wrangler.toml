@@ -1,0 +1,15 @@
+name = "github-monitor"
+
+# KV 命名空间配置
+[[kv_namespaces]]
+binding = "STORAGE"  # 在代码中使用的变量名
+id = "your-kv-namespace-id"  # 你的 KV 命名空间 ID
+
+# 环境变量
+[vars]
+TG_BOT_TOKEN = "your-telegram-bot-token"
+TG_CHAT_ID = "your-telegram-chat-id"
+
+# 定时任务
+[triggers]
+crons = ["*/30 * * * *"]  # 每30分钟检查一次
