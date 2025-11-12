@@ -54,7 +54,8 @@ const STORAGE_KEYS = {
   LAST_COMMITS: 'last_commit_',
   TG_BOT_TOKEN: 'telegram_bot_token',
   TG_CHAT_ID: 'telegram_chat_id',
-  GITHUB_TOKEN: 'github_token'
+  GITHUB_TOKEN: 'github_token',
+  LAST_CHECK_TIME: 'last_check_time'
 }
 
 // 简化会话管理 - 使用简单的密码验证
@@ -567,18 +568,24 @@ async function handleChangePassword(formData, env) {
   }
 }
 
+// 获取最后检查时间
+async function getLastCheckTime(env) {
+  return await env.STORAGE.get(STORAGE_KEYS.LAST_CHECK_TIME) || '从未检查'
+}
+
 // 显示仪表板
 async function showDashboard(env, message = '') {
   const repoList = await getRepoList(env)
   const settings = await getSettings(env)
-  const html = generateDashboardHTML(repoList, settings, message)
+  const lastCheckTime = await getLastCheckTime(env)
+  const html = generateDashboardHTML(repoList, settings, message, lastCheckTime)
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   })
 }
 
 // 生成仪表板 HTML
-function generateDashboardHTML(repoList, settings, message) {
+function generateDashboardHTML(repoList, settings, message, lastCheckTime) {
   const repoCards = repoList.map(repo => `
     <div class="repo-card">
       <div class="repo-info">
@@ -1180,6 +1187,7 @@ function generateDashboardHTML(repoList, settings, message) {
             color: var(--primary);
         }
         
+        /* 移动端优化 */
         @media (max-width: 1024px) {
             .container {
                 grid-template-columns: 1fr;
@@ -1240,6 +1248,31 @@ function generateDashboardHTML(repoList, settings, message) {
             .form-actions .btn {
                 width: 100%;
                 justify-content: center;
+            }
+            
+            /* 移动端按钮优化 */
+            .action-buttons {
+                flex-direction: column;
+                width: 100%;
+            }
+            
+            .action-buttons .btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .action-buttons .inline-form {
+                width: 100%;
+            }
+            
+            .card-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 16px;
+            }
+            
+            .card-header .action-buttons {
+                width: 100%;
             }
         }
     </style>
@@ -1486,7 +1519,7 @@ function generateDashboardHTML(repoList, settings, message) {
                         </div>
                     </div>
                     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-                        <p><strong>最后检查:</strong> ${new Date().toLocaleString('zh-CN')}</p>
+                        <p><strong>最后检查:</strong> ${lastCheckTime}</p>
                         <p><strong>通知状态:</strong> ${settings.tg_bot_token && settings.tg_chat_id ? '已启用' : '未配置'}</p>
                         <p><strong>GitHub状态:</strong> ${settings.github_token ? '已认证' : '未认证（受限）'}</p>
                     </div>
@@ -1865,6 +1898,21 @@ async function sendTelegramMessage(botToken, chatId, message) {
 async function checkAllRepos(env) {
   try {
     console.log('🔍 开始检查所有仓库更新...')
+    
+    // 记录检查开始时间
+    const checkTime = new Date().toLocaleString('zh-CN', { 
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+    
+    // 保存检查时间
+    await env.STORAGE.put(STORAGE_KEYS.LAST_CHECK_TIME, checkTime)
+    
     const repoList = await getRepoList(env)
     const settings = await getSettings(env)
     
