@@ -37,13 +37,8 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    console.log('🕒 开始执行定时检查任务:', new Date().toISOString())
-    try {
-      const result = await handleCheckUpdates(env)
-      console.log('✅ 定时检查任务完成:', result)
-    } catch (error) {
-      console.error('❌ 定时检查任务失败:', error)
-    }
+    // 使用新的cron处理函数
+    await handleCronExecution(event, env, ctx)
   }
 }
 
@@ -55,7 +50,128 @@ const STORAGE_KEYS = {
   TG_BOT_TOKEN: 'telegram_bot_token',
   TG_CHAT_ID: 'telegram_chat_id',
   GITHUB_TOKEN: 'github_token',
-  LAST_CHECK_TIME: 'last_check_time'
+  LAST_CHECK_TIME: 'last_check_time',
+  LAST_CRON_LOG: 'last_cron_log' // 新增：存储上次cron执行日志
+}
+
+// 处理cron执行
+async function handleCronExecution(event, env, ctx) {
+  console.log('🕒 开始执行定时检查任务:', new Date().toISOString())
+  
+  const startTime = Date.now()
+  let result
+  let error = null
+  
+  try {
+    // 修复：从 Response 对象中提取 JSON 数据
+    const response = await handleCheckUpdates(env)
+    result = await response.json()
+    console.log('✅ 定时检查任务完成:', result)
+  } catch (err) {
+    console.error('❌ 定时检查任务失败:', err)
+    error = err
+    result = { success: false, error: err.message }
+  }
+  
+  const endTime = Date.now()
+  const duration = endTime - startTime
+  
+  // 构建cron执行日志
+  const cronLog = {
+    timestamp: new Date().toISOString(),
+    startTime: new Date(startTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+    endTime: new Date(endTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+    duration: `${duration}ms`,
+    success: !error,
+    result: result,
+    error: error ? error.message : null
+  }
+  
+  // 保存日志到存储
+  await env.STORAGE.put(STORAGE_KEYS.LAST_CRON_LOG, JSON.stringify(cronLog))
+  
+  // 发送Telegram通知
+  await sendCronLogToTelegram(cronLog, env)
+  
+  return cronLog
+}
+
+// 发送cron日志到Telegram
+async function sendCronLogToTelegram(cronLog, env) {
+  try {
+    const settings = await getSettings(env)
+    
+    if (!settings.tg_bot_token || !settings.tg_chat_id) {
+      console.log('⚠️ Telegram未配置，跳过cron日志发送')
+      return
+    }
+    
+    const message = buildCronLogMessage(cronLog)
+    await sendTelegramMessage(settings.tg_bot_token, settings.tg_chat_id, message)
+    console.log('📨 Cron执行日志已发送到Telegram')
+  } catch (error) {
+    console.error('❌ 发送cron日志到Telegram失败:', error)
+  }
+}
+
+// 构建格式化的cron日志消息
+function buildCronLogMessage(cronLog) {
+  const statusIcon = cronLog.success ? '✅' : '❌'
+  const statusText = cronLog.success ? '执行成功' : '执行失败'
+  const title = `${statusIcon} <b>GitHub Monitor 定时任务报告</b>`
+  
+  // 基础信息
+  const basicInfo = `
+📅 <b>执行时间:</b> ${cronLog.startTime}
+⏱️ <b>执行时长:</b> ${cronLog.duration}
+🔄 <b>执行状态:</b> ${statusText}
+  `.trim()
+  
+  // 结果详情 - 修复数据访问
+  let resultDetails = ''
+  if (cronLog.success && cronLog.result) {
+    const result = cronLog.result
+    
+    // 正确提取检查结果数据
+    const checkedCount = (result.checkedCount !== undefined && result.checkedCount !== null) ? result.checkedCount : 0
+    const updatedCount = (result.updatedCount !== undefined && result.updatedCount !== null) ? result.updatedCount : 0
+    const errorCount = (result.errorCount !== undefined && result.errorCount !== null) ? result.errorCount : 0
+    
+    resultDetails = `
+📊 <b>检查结果:</b>
+   • 已检查仓库: ${checkedCount}
+   • 发现更新: ${updatedCount}
+   • 错误数量: ${errorCount}
+💬 <b>总结:</b> ${result.message || '检查完成'}
+    `.trim()
+  } else if (cronLog.error) {
+    resultDetails = `
+🚨 <b>错误信息:</b>
+<code>${cronLog.error}</code>
+    `.trim()
+  }
+  
+  // 系统状态
+  const systemInfo = `
+💻 <b>系统状态:</b> ${cronLog.success ? '正常运行' : '遇到问题'}
+⏰ <b>下次执行:</b> 10分钟后
+🔔 <b>通知渠道:</b> Telegram
+  `.trim()
+  
+  // 组合所有部分
+  const message = `
+${title}
+
+${basicInfo}
+
+${resultDetails}
+
+${systemInfo}
+
+<i>此消息由GitHub Monitor定时任务自动发送</i>
+  `.trim()
+  
+  return message
 }
 
 // 简化会话管理 - 使用简单的密码验证
@@ -573,19 +689,31 @@ async function getLastCheckTime(env) {
   return await env.STORAGE.get(STORAGE_KEYS.LAST_CHECK_TIME) || '从未检查'
 }
 
+// 获取最后cron日志
+async function getLastCronLog(env) {
+  const logData = await env.STORAGE.get(STORAGE_KEYS.LAST_CRON_LOG)
+  if (!logData) return null
+  try {
+    return JSON.parse(logData)
+  } catch {
+    return null
+  }
+}
+
 // 显示仪表板
 async function showDashboard(env, message = '') {
   const repoList = await getRepoList(env)
   const settings = await getSettings(env)
   const lastCheckTime = await getLastCheckTime(env)
-  const html = generateDashboardHTML(repoList, settings, message, lastCheckTime)
+  const lastCronLog = await getLastCronLog(env)
+  const html = generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog)
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   })
 }
 
 // 生成仪表板 HTML
-function generateDashboardHTML(repoList, settings, message, lastCheckTime) {
+function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog) {
   const repoCards = repoList.map(repo => `
     <div class="repo-card">
       <div class="repo-info">
@@ -1187,6 +1315,25 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime) {
             color: var(--primary);
         }
         
+        .cron-log {
+            margin-top: 10px;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 8px;
+            border-left: 4px solid ${lastCronLog ? (lastCronLog.success ? '#10b981' : '#ef4444') : '#cbd5e1'};
+        }
+        
+        .cron-log-title {
+            margin: 0 0 8px 0;
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+        
+        .cron-log-detail {
+            margin: 4px 0;
+            font-size: 0.9em;
+        }
+        
         /* 移动端优化 */
         @media (max-width: 1024px) {
             .container {
@@ -1522,6 +1669,18 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime) {
                         <p><strong>最后检查:</strong> ${lastCheckTime}</p>
                         <p><strong>通知状态:</strong> ${settings.tg_bot_token && settings.tg_chat_id ? '已启用' : '未配置'}</p>
                         <p><strong>GitHub状态:</strong> ${settings.github_token ? '已认证' : '未认证（受限）'}</p>
+                        
+                        ${lastCronLog ? `
+                        <div class="cron-log">
+                            <p class="cron-log-title">上次定时任务执行</p>
+                            <p class="cron-log-detail"><strong>时间:</strong> ${lastCronLog.startTime}</p>
+                            <p class="cron-log-detail"><strong>状态:</strong> ${lastCronLog.success ? '✅ 成功' : '❌ 失败'}</p>
+                            <p class="cron-log-detail"><strong>时长:</strong> ${lastCronLog.duration}</p>
+                            ${lastCronLog.result && lastCronLog.result.checkedCount !== undefined ? `
+                            <p class="cron-log-detail"><strong>检查:</strong> ${lastCronLog.result.checkedCount} 仓库, ${lastCronLog.result.updatedCount} 更新, ${lastCronLog.result.errorCount} 错误</p>
+                            ` : ''}
+                        </div>
+                        ` : ''}
                     </div>
                 </div>
                 
@@ -1918,7 +2077,13 @@ async function checkAllRepos(env) {
     
     if (repoList.length === 0) {
       console.log('ℹ️ 没有监控的仓库需要检查')
-      return { success: true, message: '没有监控的仓库需要检查' }
+      return { 
+        success: true, 
+        message: '没有监控的仓库需要检查',
+        checkedCount: 0,
+        updatedCount: 0,
+        errorCount: 0
+      }
     }
     
     console.log(`📊 共有 ${repoList.length} 个仓库需要检查`)
@@ -1988,10 +2153,22 @@ async function checkAllRepos(env) {
     
     const message = `检查完成: 已检查 ${checkedCount} 个仓库，发现 ${updatedCount} 个更新，${errorCount} 个错误`
     console.log(`✅ ${message}`)
-    return { success: true, message }
+    return { 
+      success: true, 
+      message,
+      checkedCount: checkedCount || 0,
+      updatedCount: updatedCount || 0,
+      errorCount: errorCount || 0
+    }
   } catch (error) {
     console.error('❌ 检查更新时出错:', error)
-    return { success: false, error: error.message }
+    return { 
+      success: false, 
+      error: error.message,
+      checkedCount: 0,
+      updatedCount: 0,
+      errorCount: 1
+    }
   }
 }
 
