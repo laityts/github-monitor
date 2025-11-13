@@ -106,7 +106,7 @@ async function sendCronLogToTelegram(cronLog, env) {
       return
     }
     
-    const message = buildCronLogMessage(cronLog)
+    const message = buildCronLogMessage(cronLog, env)
     await sendTelegramMessage(settings.tg_bot_token, settings.tg_chat_id, message)
     console.log('📨 Cron执行日志已发送到Telegram')
   } catch (error) {
@@ -115,7 +115,7 @@ async function sendCronLogToTelegram(cronLog, env) {
 }
 
 // 构建格式化的cron日志消息
-function buildCronLogMessage(cronLog) {
+function buildCronLogMessage(cronLog, env) {
   const statusIcon = cronLog.success ? '✅' : '❌'
   const statusText = cronLog.success ? '执行成功' : '执行失败'
   const title = `${statusIcon} <b>GitHub Monitor 定时任务报告</b>`
@@ -154,7 +154,6 @@ function buildCronLogMessage(cronLog) {
   // 系统状态
   const systemInfo = `
 💻 <b>系统状态:</b> ${cronLog.success ? '正常运行' : '遇到问题'}
-⏰ <b>下次执行:</b> 10分钟后
 🔔 <b>通知渠道:</b> Telegram
   `.trim()
   
@@ -1998,10 +1997,11 @@ function buildTelegramMessage(repoInfo, commitData) {
   const shortSha = commitData.sha.substring(0, 7)
   const commitMessage = commitData.commit.message.split('\n')[0]
   
-  // 将UTC时间转换为北京时间 (UTC+8)
+  // 修复：正确转换时间到北京时间
   const commitDate = new Date(commitData.commit.author.date)
-  const beijingTime = new Date(commitDate.getTime() + 8 * 60 * 60 * 1000)
-  const formattedTime = beijingTime.toLocaleString('zh-CN', { 
+  
+  // 使用toLocaleString直接转换为北京时间，不需要手动加减
+  const formattedTime = commitDate.toLocaleString('zh-CN', { 
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
