@@ -2,17 +2,22 @@ GitHub Monitor - 代码仓库监控系统
 
 一个基于 Cloudflare Workers 的 GitHub 代码仓库监控系统，能够实时监控指定仓库的代码更新，并通过 Telegram 发送通知。
 
-功能特性
+https://img.shields.io/badge/Version-1.0.0-blue.svg
+https://img.shields.io/badge/Platform-Cloudflare_Workers-orange.svg
+https://img.shields.io/badge/License-MIT-green.svg
 
-· 🔔 实时监控 - 自动检测 GitHub 仓库的代码提交
-· 📱 Telegram 通知 - 通过 Telegram Bot 发送更新通知
-· ⚡ 高性能 - 基于 Cloudflare Workers 边缘计算
-· 🔒 安全认证 - 管理员密码保护
-· 📊 多仓库支持 - 同时监控多个 GitHub 仓库和分支
-· ⏰ 定时检查 - 支持 Cron 定时任务自动检查
-· 🛡️ API 优化 - 支持 GitHub Token 提高 API 限制
+✨ 功能特性
 
-部署步骤
+功能 描述 状态
+🔔 实时监控 自动检测 GitHub 仓库的代码提交 ✅
+📱 Telegram 通知 通过 Telegram Bot 发送更新通知 ✅
+⚡ 高性能 基于 Cloudflare Workers 边缘计算 ✅
+🔒 安全认证 管理员密码保护 ✅
+📊 多仓库支持 同时监控多个 GitHub 仓库和分支 ✅
+⏰ 定时检查 支持 Cron 定时任务自动检查 ✅
+🛡️ API 优化 支持 GitHub Token 提高 API 限制 ✅
+
+🚀 快速开始
 
 1. 创建 Cloudflare Worker
 
@@ -23,6 +28,14 @@ GitHub Monitor - 代码仓库监控系统
 5. 给 Worker 命名并点击 "Deploy"
 
 2. 配置 KV 命名空间
+
+```bash
+# 创建 KV 命名空间
+名称: github-monitor-storage
+用途: 存储监控数据、配置信息和会话
+```
+
+操作步骤：
 
 1. 在 Workers & Pages 页面，选择 "KV"
 2. 点击 "Create namespace"
@@ -41,57 +54,80 @@ GitHub Monitor - 代码仓库监控系统
 
 4. 配置 Cron 触发器
 
+表达式 说明 推荐场景
+*/30 * * * * 每30分钟检查一次 高频更新仓库
+0 * * * * 每小时检查一次 常规监控
+0 */6 * * * 每6小时检查一次 低频更新仓库
+
+配置步骤：
+
 1. 在 Worker 的 "Settings" 标签页
 2. 点击 "Triggers" 部分
 3. 在 "Cron Triggers" 点击 "Add trigger"
-4. 设置定时任务表达式，例如：
-   · */30 * * * * - 每30分钟检查一次
-   · 0 * * * * - 每小时检查一次
-   · 0 */6 * * * - 每6小时检查一次
+4. 设置定时任务表达式
 
 5. 上传代码
 
 将提供的 worker.js 代码复制粘贴到 Worker 编辑器中，然后点击 "Save and Deploy"。
 
-初始配置
+⚙️ 详细配置
 
-1. 访问管理面板
+初始访问
 
-部署完成后，访问你的 Worker URL（格式：`https://your-worker-name.your-subdomain.workers.dev/`）
+部署完成后，访问你的 Worker URL：
 
-2. 登录系统
+```
+https://your-worker-name.your-subdomain.workers.dev/
+```
 
-· 默认密码: admin123
-· 首次登录后建议立即修改密码
+默认登录信息：
 
-3. 配置 GitHub Token（推荐）
+· 🔐 用户名: admin
+· 🔑 密码: admin123
+
+⚠️ 安全提示: 首次登录后请立即修改默认密码！
+
+GitHub Token 配置
+
+推荐配置 GitHub Token 以提高 API 限制：
 
 1. 访问 GitHub Settings → Developer settings → Personal access tokens
 2. 点击 "Generate new token"
 3. 输入 token 名称（例如：GitHub Monitor）
-4. 无需选择任何权限（空权限即可）
-5. 生成 token 并复制
-6. 在系统设置的 "GitHub API 配置" 中粘贴 token
+4. 选择有效期（推荐：90天）
+5. 无需选择任何权限（空权限即可访问公开仓库）
+6. 生成 token 并复制
+7. 在系统设置的 "GitHub API 配置" 中粘贴 token
 
-4. 配置 Telegram 通知
+Telegram 通知配置
+
+创建 Telegram Bot：
 
 1. 在 Telegram 中搜索 @BotFather
 2. 发送 /newbot 创建新机器人
 3. 设置机器人名称和用户名
 4. 获取 Bot Token
-5. 向你的机器人发送任意消息
-6. 访问 https://api.telegram.org/bot<YourBOTToken>/getUpdates 获取 Chat ID
-7. 在系统设置的 "Telegram 通知配置" 中填写 Token 和 Chat ID
 
-使用方法
+获取 Chat ID：
+
+1. 向你的机器人发送任意消息
+2. 访问以下 URL（替换为你的 Bot Token）：
+   ```
+   https://api.telegram.org/bot<YourBOTToken>/getUpdates
+   ```
+3. 在响应中找到 chat.id 字段
+4. 在系统设置的 "Telegram 通知配置" 中填写 Token 和 Chat ID
+
+📖 使用方法
 
 添加监控仓库
 
-1. 在 "添加监控仓库" 表单中填写：
-   · 仓库所有者: GitHub 用户名或组织名
-   · 仓库名称: 仓库名称
-   · 分支名称: 要监控的分支（可选，默认为 main）
-2. 点击 "添加仓库"
+在 "添加监控仓库" 表单中填写以下信息：
+
+字段 说明 示例
+仓库所有者 GitHub 用户名或组织名 microsoft
+仓库名称 仓库名称 vscode
+分支名称 要监控的分支（可选） main
 
 手动检查更新
 
@@ -100,81 +136,112 @@ GitHub Monitor - 代码仓库监控系统
 
 查看系统状态
 
-· 在 "系统信息" 卡片中查看：
-  · 监控仓库数量
-  · 最后检查时间
-  · 通知状态
-  · 上次定时任务执行情况
+在 "系统信息" 面板中查看：
 
-API 端点
+· 📊 监控仓库数量
+· ⏰ 最后检查时间
+· 🔔 通知状态
+· ✅ 上次定时任务执行情况
 
-· GET / - 管理面板
-· GET /login - 登录页面
-· POST /login - 登录处理
-· GET /logout - 退出登录
-· GET /check-updates - 手动检查更新（API）
-· GET /health - 健康检查
+🔌 API 参考
 
-配置说明
+端点 方法 描述 认证要求
+/ GET 管理面板 是
+/login GET 登录页面 否
+/login POST 登录处理 否
+/logout GET 退出登录 是
+/check-updates GET 手动检查更新 是
+/health GET 健康检查 否
+
+⚠️ 配置说明
 
 GitHub API 限制
 
-· 无 Token: 60 请求/小时
-· 有 Token: 5000 请求/小时
-· 系统会自动在请求间添加延迟以避免触发限制
+配置 限制 建议
+无 Token 60 请求/小时 个人使用
+有 Token 5000 请求/小时 多仓库监控
 
-安全特性
+💡 优化提示: 系统会自动在请求间添加延迟以避免触发限制
 
-· 管理员密码使用 SHA-256 加密存储
-· 会话 Cookie 24小时过期
-· HTTPOnly Cookie 防止 XSS 攻击
+🔒 安全特性
 
-通知格式
+· 🔐 管理员密码使用 SHA-256 加密存储
+· ⏳ 会话 Cookie 24小时过期
+· 🛡️ HTTPOnly Cookie 防止 XSS 攻击
+· 🔒 CSRF 保护
 
-Telegram 通知包含：
+📨 通知格式
 
-· 仓库名称和链接
-· 分支信息
-· 最新提交信息（作者、消息、时间）
-· 相关链接
+Telegram 通知包含以下信息：
 
-故障排除
+```
+🔄 代码更新通知
+
+📦 仓库: microsoft/vscode
+🌿 分支: main
+👤 作者: john-doe
+💬 提交: 修复登录页面样式问题
+⏰ 时间: 2024-01-15 14:30:25
+
+🔗 查看提交: https://github.com/microsoft/vscode/commit/abc123...
+```
+
+🐛 故障排除
 
 常见问题
 
-1. GitHub API 限制
-   · 配置 GitHub Token 提高限制
-   · 减少检查频率
-2. Telegram 通知发送失败
-   · 检查 Bot Token 和 Chat ID 是否正确
-   · 确认机器人已启动并向其发送过消息
-3. 仓库检查失败
-   · 确认仓库存在且可访问
-   · 检查分支名称是否正确
-   · 查看系统日志获取详细错误信息
+问题 症状 解决方案
+GitHub API 限制 429 错误码 配置 GitHub Token 或减少检查频率
+Telegram 通知失败 消息未发送 检查 Bot Token 和 Chat ID 配置
+仓库检查失败 404 错误 确认仓库存在且分支名称正确
+登录问题 会话过期 清除浏览器缓存或重新登录
 
-日志查看
+📋 日志查看
 
-在 Cloudflare Dashboard 的 Worker 日志中查看详细执行日志。
+在 Cloudflare Dashboard 的 Worker 日志中查看详细执行日志：
 
-开发说明
+1. 进入 Worker 详情页
+2. 点击 "Logs" 标签页
+3. 查看实时日志或历史记录
 
-系统使用原生 Cloudflare Workers API，主要特性：
+🛠️ 开发说明
 
-· 使用 KV 存储持久化数据
-· 模块化代码结构
-· 响应式管理界面
-· 错误处理和重试机制
+技术架构
 
-许可证
+```
+GitHub Monitor
+├── 📁 前端界面 (HTML/CSS/JS)
+├── 🔧 业务逻辑 (JavaScript)
+├── 💾 数据存储 (Cloudflare KV)
+├── ⏰ 定时任务 (Cron Triggers)
+└── 📱 通知服务 (Telegram Bot API)
+```
 
-MIT License
+核心特性
 
-支持
+· 🏗️ 使用原生 Cloudflare Workers API
+· 💽 KV 存储持久化数据
+· 🧩 模块化代码结构
+· 📱 响应式管理界面
+· 🔄 错误处理和重试机制
 
-如遇问题，请检查：
+📄 许可证
 
-1. Cloudflare Worker 日志
-2. GitHub API 状态
-3. Telegram Bot 配置
-4. 网络连接状态
+本项目采用 MIT License - 详见 LICENSE 文件。
+
+💬 支持与帮助
+
+如遇问题，请按以下步骤排查：
+
+1. 🔍 检查日志: 查看 Cloudflare Worker 日志
+2. 🌐 API 状态: 确认 GitHub API 和 Telegram API 状态
+3. ⚙️ 配置验证: 重新检查 Bot Token 和 Chat ID
+4. 🔗 网络连接: 确认网络连接正常
+
+---
+
+<div align="center">
+
+如果这个项目对你有帮助，请给个 ⭐️ Star 支持一下！
+
+</div>
