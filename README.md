@@ -1,4 +1,4 @@
-```markdown
+```
 # GitHub Monitor – Cloudflare Workers 版
 
 一个轻量、零依赖的 **GitHub 仓库更新监控系统**，部署在 **Cloudflare Workers** 上，实时检测代码提交并通过 **Telegram** 推送通知。
@@ -44,13 +44,7 @@
 
 将下方完整代码 **全部复制**，粘贴到 Worker 编辑器中，覆盖默认内容：
 
-```js
-// ← 粘贴从 export default { 开始的完整代码 →
-// （即你提供的全部代码）
 ```
-
-> 代码已包含所有逻辑，无需修改。
-
 ### 4. 设置 Cron 触发器（定时任务）
 
 1. 在 Worker 页面点击 **Settings** → **Triggers**
