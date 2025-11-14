@@ -51,7 +51,8 @@ const STORAGE_KEYS = {
   TG_CHAT_ID: 'telegram_chat_id',
   GITHUB_TOKEN: 'github_token',
   LAST_CHECK_TIME: 'last_check_time',
-  LAST_CRON_LOG: 'last_cron_log'
+  LAST_CRON_LOG: 'last_cron_log',
+  CRON_NOTIFICATION_ENABLED: 'cron_notification_enabled' // 新增：定时任务通知开关
 };
 
 // ==================== CRON 执行处理 ====================
@@ -89,7 +90,7 @@ async function handleCronExecution(event, env, ctx) {
   // 保存日志到存储
   await env.STORAGE.put(STORAGE_KEYS.LAST_CRON_LOG, JSON.stringify(cronLog));
   
-  // 发送Telegram通知
+  // 发送Telegram通知（根据开关状态）
   await sendCronLogToTelegram(cronLog, env);
   
   return cronLog;
@@ -326,11 +327,13 @@ async function handleUpdateSettings(formData, env) {
   const tg_bot_token = formData.get('tg_bot_token')?.trim();
   const tg_chat_id = formData.get('tg_chat_id')?.trim();
   const github_token = formData.get('github_token')?.trim();
+  const cron_notification_enabled = formData.get('cron_notification_enabled') === 'on';
   
   const settings = {
     tg_bot_token,
     tg_chat_id,
-    github_token
+    github_token,
+    cron_notification_enabled
   };
   
   await saveSettings(settings, env);
@@ -438,23 +441,35 @@ async function getSettings(env) {
   const tg_bot_token = await env.STORAGE.get(STORAGE_KEYS.TG_BOT_TOKEN);
   const tg_chat_id = await env.STORAGE.get(STORAGE_KEYS.TG_CHAT_ID);
   const github_token = await env.STORAGE.get(STORAGE_KEYS.GITHUB_TOKEN);
+  const cron_notification_enabled_str = await env.STORAGE.get(STORAGE_KEYS.CRON_NOTIFICATION_ENABLED);
+  
+  // 处理开关状态，默认为true（开启）
+  let cron_notification_enabled = true;
+  if (cron_notification_enabled_str !== null) {
+    cron_notification_enabled = cron_notification_enabled_str === 'true';
+  }
   
   return {
     tg_bot_token: tg_bot_token || '',
     tg_chat_id: tg_chat_id || '',
-    github_token: github_token || ''
+    github_token: github_token || '',
+    cron_notification_enabled: cron_notification_enabled
   };
 }
 
 async function saveSettings(settings, env) {
-  if (settings.tg_bot_token) {
+  if (settings.tg_bot_token !== undefined) {
     await env.STORAGE.put(STORAGE_KEYS.TG_BOT_TOKEN, settings.tg_bot_token);
   }
-  if (settings.tg_chat_id) {
+  if (settings.tg_chat_id !== undefined) {
     await env.STORAGE.put(STORAGE_KEYS.TG_CHAT_ID, settings.tg_chat_id);
   }
-  if (settings.github_token) {
+  if (settings.github_token !== undefined) {
     await env.STORAGE.put(STORAGE_KEYS.GITHUB_TOKEN, settings.github_token);
+  }
+  // 保存定时任务通知开关状态
+  if (settings.cron_notification_enabled !== undefined) {
+    await env.STORAGE.put(STORAGE_KEYS.CRON_NOTIFICATION_ENABLED, settings.cron_notification_enabled.toString());
   }
 }
 
@@ -533,6 +548,12 @@ async function sendCronLogToTelegram(cronLog, env) {
     
     if (!settings.tg_bot_token || !settings.tg_chat_id) {
       console.log('⚠️ Telegram未配置，跳过cron日志发送');
+      return;
+    }
+    
+    // 检查定时任务通知开关
+    if (!settings.cron_notification_enabled) {
+      console.log('🔇 定时任务通知已关闭，跳过cron日志发送');
       return;
     }
     
@@ -1088,14 +1109,19 @@ function showLoginPage(errorMessage = '') {
 }
 
 async function showDashboard(env, message = '') {
-  const repoList = await getRepoList(env);
-  const settings = await getSettings(env);
-  const lastCheckTime = await getLastCheckTime(env);
-  const lastCronLog = await getLastCronLog(env);
-  const html = generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog);
-  return new Response(html, {
-    headers: { 'Content-Type': 'text/html; charset=utf-8' }
-  });
+  try {
+    const repoList = await getRepoList(env);
+    const settings = await getSettings(env);
+    const lastCheckTime = await getLastCheckTime(env);
+    const lastCronLog = await getLastCronLog(env);
+    const html = generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog);
+    return new Response(html, {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
+  } catch (error) {
+    console.error('显示仪表板时出错:', error);
+    return new Response(`显示仪表板时出错: ${error.message}`, { status: 500 });
+  }
 }
 
 function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog) {
@@ -1106,19 +1132,19 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
           <i class="fab fa-github"></i>
         </div>
         <div class="repo-details">
-          <h3>${repo.owner}/${repo.repo}</h3>
+          <h3>${escapeHtml(repo.owner)}/${escapeHtml(repo.repo)}</h3>
           <p class="repo-branch">
             <i class="fas fa-code-branch"></i>
-            ${repo.branch}
+            ${escapeHtml(repo.branch)}
           </p>
         </div>
       </div>
       <div class="repo-actions">
         <form method="post" class="inline-form">
           <input type="hidden" name="action" value="delete">
-          <input type="hidden" name="owner" value="${repo.owner}">
-          <input type="hidden" name="repo" value="${repo.repo}">
-          <input type="hidden" name="branch" value="${repo.branch}">
+          <input type="hidden" name="owner" value="${escapeHtml(repo.owner)}">
+          <input type="hidden" name="repo" value="${escapeHtml(repo.repo)}">
+          <input type="hidden" name="branch" value="${escapeHtml(repo.branch)}">
           <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定要删除这个仓库吗？')">
             <i class="fas fa-trash"></i>
           </button>
@@ -1126,6 +1152,19 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
       </div>
     </div>
   `).join('');
+
+  // 辅助函数：转义HTML特殊字符
+  function escapeHtml(text) {
+    if (!text) return '';
+    const map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+  }
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1621,6 +1660,71 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
             font-size: 0.9em;
         }
         
+        /* 新增：开关样式 */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .toggle-slider {
+            background-color: var(--success);
+        }
+        
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+        
+        .toggle-label {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        
+        .toggle-text {
+            font-weight: 600;
+            color: var(--darker);
+        }
+        
+        .toggle-description {
+            font-size: 0.875rem;
+            color: var(--gray);
+            margin-top: 4px;
+            margin-left: 72px;
+        }
+        
         /* 移动端优化 */
         @media (max-width: 1024px) {
             .container {
@@ -1755,7 +1859,7 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
         ${message ? `
             <div class="alert ${message.includes('成功') ? 'alert-success' : message.includes('错误') ? 'alert-error' : 'alert-warning'}">
                 <i class="fas ${message.includes('成功') ? 'fa-check-circle' : message.includes('错误') ? 'fa-exclamation-circle' : 'fa-info-circle'}"></i>
-                ${message}
+                ${escapeHtml(message)}
             </div>
         ` : ''}
         
@@ -1857,7 +1961,7 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                                         <div class="form-input">
                                             <i class="fas fa-key"></i>
                                             <input type="text" id="github_token" name="github_token" 
-                                                   value="${settings.github_token || ''}" 
+                                                   value="${escapeHtml(settings.github_token || '')}" 
                                                    placeholder="输入GitHub Personal Access Token">
                                         </div>
                                         <div class="help-text">
@@ -1880,7 +1984,7 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                                         <div class="form-input">
                                             <i class="fas fa-robot"></i>
                                             <input type="text" id="tg_bot_token" name="tg_bot_token" 
-                                                   value="${settings.tg_bot_token || ''}" 
+                                                   value="${escapeHtml(settings.tg_bot_token || '')}" 
                                                    placeholder="输入Telegram Bot Token">
                                         </div>
                                     </div>
@@ -1889,7 +1993,7 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                                         <div class="form-input">
                                             <i class="fas fa-comment"></i>
                                             <input type="text" id="tg_chat_id" name="tg_chat_id" 
-                                                   value="${settings.tg_chat_id || ''}" 
+                                                   value="${escapeHtml(settings.tg_chat_id || '')}" 
                                                    placeholder="输入Telegram Chat ID">
                                         </div>
                                     </div>
@@ -1897,6 +2001,19 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                                     <div class="status-item">
                                         <div class="status-dot ${settings.tg_bot_token && settings.tg_chat_id ? 'status-connected' : 'status-disconnected'}"></div>
                                         <span>${settings.tg_bot_token && settings.tg_chat_id ? 'Telegram 已配置' : 'Telegram 未配置'}</span>
+                                    </div>
+                                    
+                                    <!-- 新增：定时任务通知开关 -->
+                                    <div class="toggle-label">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" name="cron_notification_enabled" ${settings.cron_notification_enabled ? 'checked' : ''}>
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                        <span class="toggle-text">定时任务执行通知</span>
+                                    </div>
+                                    <div class="toggle-description">
+                                        开启后，每次定时任务执行时都会发送执行结果通知到Telegram。<br>
+                                        <strong>注意：</strong>此设置不影响仓库更新通知，仓库更新通知会正常发送。
                                     </div>
                                 </div>
                                 
@@ -1975,16 +2092,17 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                         </div>
                     </div>
                     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-                        <p><strong>最后检查:</strong> ${lastCheckTime}</p>
+                        <p><strong>最后检查:</strong> ${escapeHtml(lastCheckTime)}</p>
                         <p><strong>通知状态:</strong> ${settings.tg_bot_token && settings.tg_chat_id ? '已启用' : '未配置'}</p>
                         <p><strong>GitHub状态:</strong> ${settings.github_token ? '已认证' : '未认证（受限）'}</p>
+                        <p><strong>定时任务通知:</strong> ${settings.cron_notification_enabled ? '已开启' : '已关闭'}</p>
                         
                         ${lastCronLog ? `
                         <div class="cron-log">
                             <p class="cron-log-title">上次定时任务执行</p>
-                            <p class="cron-log-detail"><strong>时间:</strong> ${lastCronLog.startTime}</p>
+                            <p class="cron-log-detail"><strong>时间:</strong> ${escapeHtml(lastCronLog.startTime)}</p>
                             <p class="cron-log-detail"><strong>状态:</strong> ${lastCronLog.success ? '✅ 成功' : '❌ 失败'}</p>
-                            <p class="cron-log-detail"><strong>时长:</strong> ${lastCronLog.duration}</p>
+                            <p class="cron-log-detail"><strong>时长:</strong> ${escapeHtml(lastCronLog.duration)}</p>
                             ${lastCronLog.result && lastCronLog.result.checkedCount !== undefined ? `
                             <p class="cron-log-detail"><strong>检查:</strong> ${lastCronLog.result.checkedCount} 仓库, ${lastCronLog.result.updatedCount} 更新, ${lastCronLog.result.errorCount} 错误</p>
                             ` : ''}
@@ -2010,6 +2128,12 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                             <li>通过 @BotFather 创建机器人获取Token</li>
                             <li>向机器人发送消息后获取Chat ID</li>
                             <li>点击"测试通知"验证配置</li>
+                        </ul>
+                        
+                        <p><strong>定时任务通知:</strong></p>
+                        <ul style="margin-left: 20px;">
+                            <li>开启：每次定时任务执行都会发送执行结果</li>
+                            <li>关闭：只发送仓库更新通知，不发送定时任务执行日志</li>
                         </ul>
                     </div>
                 </div>
