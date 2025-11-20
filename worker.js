@@ -541,6 +541,60 @@ async function fetchLatestCommit(owner, repo, branch, githubToken = null) {
   return commits[0];
 }
 
+async function fetchCommitsBetween(owner, repo, branch, sinceCommit, githubToken = null) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch}&per_page=100`;
+  
+  const headers = {
+    'User-Agent': 'GitHub-Monitor-Bot',
+    'Accept': 'application/vnd.github.v3+json'
+  };
+  
+  if (githubToken) {
+    headers['Authorization'] = `token ${githubToken}`;
+  }
+  
+  const response = await fetch(url, { headers });
+  
+  if (!response.ok) {
+    if (response.status === 403) {
+      if (githubToken) {
+        throw new Error('GitHub API 频率限制（即使使用Token也达到限制），请稍后重试');
+      } else {
+        throw new Error('GitHub API 频率限制（未认证请求），请配置GitHub Token以提高限制');
+      }
+    } else if (response.status === 404) {
+      throw new Error('仓库不存在或没有访问权限');
+    } else {
+      throw new Error(`GitHub API错误: ${response.status} ${response.statusText}`);
+    }
+  }
+  
+  const commits = await response.json();
+  
+  if (!commits || commits.length === 0) {
+    throw new Error('该分支没有提交记录');
+  }
+  
+  // 找到 sinceCommit 的位置
+  let sinceIndex = -1;
+  if (sinceCommit) {
+    sinceIndex = commits.findIndex(commit => commit.sha === sinceCommit);
+  }
+  
+  // 如果找到了 sinceCommit，则返回从最新提交到 sinceCommit 之间的所有提交
+  // 如果没找到 sinceCommit，则返回所有获取到的提交
+  if (sinceIndex > 0) {
+    return commits.slice(0, sinceIndex);
+  } else if (sinceIndex === -1 && sinceCommit) {
+    // 如果没找到 sinceCommit，但 sinceCommit 存在，说明可能历史记录很深
+    // 返回所有获取到的提交，并在消息中说明可能不完整
+    return commits;
+  } else {
+    // 如果没有 sinceCommit（首次检查），只返回最新提交
+    return [commits[0]];
+  }
+}
+
 // ==================== Telegram 函数 ====================
 async function sendCronLogToTelegram(cronLog, env) {
   try {
@@ -621,36 +675,62 @@ ${systemInfo}
   return message;
 }
 
-function buildTelegramMessage(repoInfo, commitData) {
-  const commitUrl = commitData.html_url;
+function buildTelegramMessage(repoInfo, commits, isCompleteHistory = true) {
   const repoUrl = `https://github.com/${repoInfo.owner}/${repoInfo.repo}`;
-  const shortSha = commitData.sha.substring(0, 7);
-  const commitMessage = commitData.commit.message.split('\n')[0];
+  const branchUrl = `${repoUrl}/tree/${repoInfo.branch}`;
   
-  const commitDate = new Date(commitData.commit.author.date);
-  const formattedTime = commitDate.toLocaleString('zh-CN', { 
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
+  let message = `🚀 <b>代码仓库已更新！</b>\n\n`;
+  message += `📦 <b>仓库:</b> <a href="${repoUrl}">${repoInfo.owner}/${repoInfo.repo}</a>\n`;
+  message += `🌿 <b>分支:</b> <code>${repoInfo.branch}</code>\n\n`;
   
-  const message = `
-🚀 <b>代码仓库已更新！</b>
-
-📦 <b>仓库:</b> <a href="${repoUrl}">${repoInfo.owner}/${repoInfo.repo}</a>
-🌿 <b>分支:</b> <code>${repoInfo.branch}</code>
-
-📝 <b>最新提交:</b> <a href="${commitUrl}">${shortSha}</a>
-👤 <b>作者:</b> ${commitData.commit.author.name}
-💬 <b>提交信息:</b> ${commitMessage}
-⏰ <b>时间:</b> ${formattedTime} (北京时间)
-
-<a href="${repoUrl}/tree/${repoInfo.branch}">查看分支</a> | <a href="${repoUrl}/commits/${repoInfo.branch}">查看提交历史</a>
-  `.trim();
+  if (commits.length === 1) {
+    // 单个提交的情况
+    const commit = commits[0];
+    const commitUrl = commit.html_url;
+    const shortSha = commit.sha.substring(0, 7);
+    const commitMessage = commit.commit.message.split('\n')[0];
+    
+    const commitDate = new Date(commit.commit.author.date);
+    const formattedTime = commitDate.toLocaleString('zh-CN', { 
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    
+    message += `📝 <b>最新提交:</b> <a href="${commitUrl}">${shortSha}</a>\n`;
+    message += `👤 <b>作者:</b> ${commit.commit.author.name}\n`;
+    message += `💬 <b>提交信息:</b> ${commitMessage}\n`;
+    message += `⏰ <b>时间:</b> ${formattedTime}\n\n`;
+  } else {
+    // 多个提交的情况
+    message += `📋 <b>发现 ${commits.length} 个新提交</b>\n\n`;
+    
+    commits.forEach((commit, index) => {
+      const commitUrl = commit.html_url;
+      const shortSha = commit.sha.substring(0, 7);
+      const commitMessage = commit.commit.message.split('\n')[0];
+      
+      const commitDate = new Date(commit.commit.author.date);
+      const formattedTime = commitDate.toLocaleString('zh-CN', { 
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      message += `${index + 1}. <a href="${commitUrl}">${shortSha}</a> - ${commitMessage}\n`;
+      message += `   👤 ${commit.commit.author.name} • ⏰ ${formattedTime}\n\n`;
+    });
+    
+    if (!isCompleteHistory) {
+      message += `⚠️ <i>注意：由于提交历史较长，可能未显示所有提交</i>\n\n`;
+    }
+  }
+  
+  message += `<a href="${repoUrl}/commits/${repoInfo.branch}">查看完整提交历史</a>`;
   
   return message;
 }
@@ -745,9 +825,40 @@ async function checkAllRepos(env) {
           console.log(`🆕 检测到新提交: ${latestCommit.sha}`);
           updatedCount++;
           
-          if (hasTelegramConfig) {
+          // 获取从上次记录提交到最新提交之间的所有提交
+          let newCommits = [];
+          let isCompleteHistory = true;
+          
+          try {
+            newCommits = await fetchCommitsBetween(
+              repo.owner, 
+              repo.repo, 
+              repo.branch, 
+              lastKnownCommit, 
+              settings.github_token
+            );
+            
+            // 检查是否获取到了完整的提交历史
+            if (newCommits.length > 0) {
+              const lastFetchedCommit = newCommits[newCommits.length - 1];
+              isCompleteHistory = lastFetchedCommit.sha === lastKnownCommit;
+              
+              if (!isCompleteHistory) {
+                console.log(`⚠️ 可能未获取到完整的提交历史，最新获取的提交: ${lastFetchedCommit.sha}，期望找到: ${lastKnownCommit}`);
+              }
+            }
+            
+            console.log(`📋 获取到 ${newCommits.length} 个新提交`);
+          } catch (fetchError) {
+            console.error(`❌ 获取提交历史失败:`, fetchError);
+            // 如果获取完整提交历史失败，回退到只发送最新提交
+            newCommits = [latestCommit];
+            isCompleteHistory = false;
+          }
+          
+          if (hasTelegramConfig && newCommits.length > 0) {
             console.log(`📨 发送Telegram通知...`);
-            const message = buildTelegramMessage(repo, latestCommit);
+            const message = buildTelegramMessage(repo, newCommits, isCompleteHistory);
             await sendTelegramMessage(settings.tg_bot_token, settings.tg_chat_id, message);
             console.log(`✅ Telegram通知发送成功`);
           }
@@ -2134,6 +2245,13 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                         <ul style="margin-left: 20px;">
                             <li>开启：每次定时任务执行都会发送执行结果</li>
                             <li>关闭：只发送仓库更新通知，不发送定时任务执行日志</li>
+                        </ul>
+                        
+                        <p><strong>提交历史显示:</strong></p>
+                        <ul style="margin-left: 20px;">
+                            <li>检测到更新时，会显示从上次记录到最新的所有提交</li>
+                            <li>最多显示100个提交（GitHub API限制）</li>
+                            <li>如果提交历史很长，会提示可能不完整</li>
                         </ul>
                     </div>
                 </div>
