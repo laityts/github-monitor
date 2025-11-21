@@ -1,0 +1,10 @@
+# wrangler.toml
+name = 'github-monitor'
+main = "worker.js"
+compatibility_date = "2025-11-21"
+keep_vars = true
+
+# 绑定 KV 命名空间
+[[kv_namespaces]]
+binding = "STORAGE"  # 在代码中使用的变量名
+id = "23647058d05b415e918016865bfc408d"  # KV 命名空间的 ID
