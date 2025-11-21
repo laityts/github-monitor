@@ -675,6 +675,7 @@ ${systemInfo}
   return message;
 }
 
+// ==================== Telegram 函数 ====================
 function buildTelegramMessage(repoInfo, commits, isCompleteHistory = true) {
   const repoUrl = `https://github.com/${repoInfo.owner}/${repoInfo.repo}`;
   const branchUrl = `${repoUrl}/tree/${repoInfo.branch}`;
@@ -684,7 +685,7 @@ function buildTelegramMessage(repoInfo, commits, isCompleteHistory = true) {
   message += `🌿 <b>分支:</b> <code>${repoInfo.branch}</code>\n\n`;
   
   if (commits.length === 1) {
-    // 单个提交的情况
+    // 单个提交的情况（保持不变）
     const commit = commits[0];
     const commitUrl = commit.html_url;
     const shortSha = commit.sha.substring(0, 7);
@@ -706,10 +707,13 @@ function buildTelegramMessage(repoInfo, commits, isCompleteHistory = true) {
     message += `💬 <b>提交信息:</b> ${commitMessage}\n`;
     message += `⏰ <b>时间:</b> ${formattedTime}\n\n`;
   } else {
-    // 多个提交的情况
+    // 多个提交的情况 - 限制最多显示10个
+    const displayCommits = commits.slice(0, 10); // 只取前10个提交
+    const remainingCount = commits.length - displayCommits.length; // 计算剩余的提交数量
+    
     message += `📋 <b>发现 ${commits.length} 个新提交</b>\n\n`;
     
-    commits.forEach((commit, index) => {
+    displayCommits.forEach((commit, index) => {
       const commitUrl = commit.html_url;
       const shortSha = commit.sha.substring(0, 7);
       const commitMessage = commit.commit.message.split('\n')[0];
@@ -724,6 +728,11 @@ function buildTelegramMessage(repoInfo, commits, isCompleteHistory = true) {
       message += `${index + 1}. <a href="${commitUrl}">${shortSha}</a> - ${commitMessage}\n`;
       message += `   👤 ${commit.commit.author.name} • ⏰ ${formattedTime}\n\n`;
     });
+    
+    // 添加限制提示
+    if (remainingCount > 0) {
+      message += `📝 <i>由于提交数量较多，只显示最新的10个提交（还有${remainingCount}个提交未显示）</i>\n\n`;
+    }
     
     if (!isCompleteHistory) {
       message += `⚠️ <i>注意：由于提交历史较长，可能未显示所有提交</i>\n\n`;
