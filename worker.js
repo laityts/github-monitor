@@ -330,10 +330,10 @@ async function handleClearRepos(env) {
 async function handleAddSyncConfig(formData, env) {
   const sourceOwner = formData.get('source_owner')?.trim();
   const sourceRepo = formData.get('source_repo')?.trim();
-  let sourceBranch = formData.get('source_branch')?.trim();  // 改为 let
+  const sourceBranch = formData.get('source_branch')?.trim();
   const targetOwner = formData.get('target_owner')?.trim();
   const targetRepo = formData.get('target_repo')?.trim();
-  let targetBranch = formData.get('target_branch')?.trim();  // 改为 let
+  const targetBranch = formData.get('target_branch')?.trim();
   const syncEnabled = formData.get('sync_enabled') === 'on';
   
   if (!sourceOwner || !sourceRepo || !targetOwner || !targetRepo) {
