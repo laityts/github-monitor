@@ -253,13 +253,21 @@ async function handleDashboard(request, env, url) {
 
 // ==================== 仓库管理函数 ====================
 async function handleAddRepo(formData, env) {
-  const owner = formData.get('owner')?.trim();
-  const repo = formData.get('repo')?.trim();
+  const repoFullName = formData.get('repo_full_name')?.trim();
   let branch = formData.get('branch')?.trim();
   
-  if (!owner || !repo) {
-    return showDashboard(env, '错误：仓库所有者和仓库名称不能为空');
+  if (!repoFullName) {
+    return showDashboard(env, '错误：仓库名称不能为空');
   }
+  
+  // 解析仓库所有者/名称
+  const repoParts = repoFullName.split('/');
+  if (repoParts.length !== 2 || !repoParts[0] || !repoParts[1]) {
+    return showDashboard(env, '错误：仓库名称格式不正确，请使用"所有者/仓库名"格式');
+  }
+  
+  const owner = repoParts[0].trim();
+  const repo = repoParts[1].trim();
   
   if (!branch) branch = 'main';
   
@@ -1986,41 +1994,31 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
         <div class="container">
             <div class="main-content">
                 <div class="card">
-                    <div class="card-header">
-                        <h2><i class="fas fa-plus-circle"></i> 添加监控仓库</h2>
+                  <div class="card-header">
+                    <h2><i class="fas fa-plus-circle"></i> 添加监控仓库</h2>
+                  </div>
+                  <form method="post">
+                    <input type="hidden" name="action" value="add">
+                    <div class="form-group">
+                      <label for="repo_full_name">仓库名称</label>
+                      <div class="form-input">
+                        <i class="fas fa-project-diagram"></i>
+                        <input type="text" id="repo_full_name" name="repo_full_name" placeholder="例如：microsoft/vscode" required>
+                      </div>
+                      <div class="help-text">使用"所有者/仓库名"格式，例如：microsoft/vscode</div>
                     </div>
-                    <form method="post">
-                        <input type="hidden" name="action" value="add">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="owner">仓库所有者</label>
-                                <div class="form-input">
-                                    <i class="fas fa-user"></i>
-                                    <input type="text" id="owner" name="owner" placeholder="例如：microsoft" required>
-                                </div>
-                                <div class="help-text">GitHub用户名或组织名称</div>
-                            </div>
-                            <div class="form-group">
-                                <label for="repo">仓库名称</label>
-                                <div class="form-input">
-                                    <i class="fas fa-project-diagram"></i>
-                                    <input type="text" id="repo" name="repo" placeholder="例如：vscode" required>
-                                </div>
-                                <div class="help-text">GitHub仓库的名称</div>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="branch">分支名称</label>
-                            <div class="form-input">
-                                <i class="fas fa-code-branch"></i>
-                                <input type="text" id="branch" name="branch" placeholder="例如：main（可选，默认为main）">
-                            </div>
-                            <div class="help-text">留空将默认为 main 分支</div>
-                        </div>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-plus"></i> 添加仓库
-                        </button>
-                    </form>
+                    <div class="form-group">
+                      <label for="branch">分支名称</label>
+                      <div class="form-input">
+                        <i class="fas fa-code-branch"></i>
+                        <input type="text" id="branch" name="branch" placeholder="例如：main（可选，默认为main）">
+                      </div>
+                      <div class="help-text">留空将默认为 main 分支</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                      <i class="fas fa-plus"></i> 添加仓库
+                    </button>
+                  </form>
                 </div>
                 
                 <div class="card">
