@@ -869,17 +869,7 @@ async function testBranchExistence(owner, repo, branch, githubToken) {
   
   if (!response.ok) {
     if (response.status === 404) {
-      // 获取仓库的所有分支来帮助用户诊断
-      const branchesUrl = `https://api.github.com/repos/${owner}/${repo}/branches`;
-      const branchesResponse = await fetch(branchesUrl, { headers });
-      
-      let availableBranches = [];
-      if (branchesResponse.ok) {
-        const branchesData = await branchesResponse.json();
-        availableBranches = branchesData.map(b => b.name);
-      }
-      
-      throw new Error(`分支 "${branch}" 在仓库 ${owner}/${repo} 中不存在。可用分支: ${availableBranches.join(', ') || '无法获取分支列表'}`);
+      throw new Error(`分支 ${branch} 在仓库 ${owner}/${repo} 中不存在`);
     } else {
       throw new Error(`检查分支失败: ${response.status} ${response.statusText}`);
     }
@@ -892,7 +882,7 @@ async function performSync(syncConfig, githubToken, env) {
   try {
     console.log(`🔄 开始同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}:${syncConfig.sourceBranch} → ${syncConfig.targetOwner}/${syncConfig.targetRepo}:${syncConfig.targetBranch}`);
     
-    // 1. 验证源仓库存在性
+    // 1. 验证源仓库存在性（只需要读取权限）
     console.log(`🔍 验证源仓库: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}`);
     await testRepositoryAccess(syncConfig.sourceOwner, syncConfig.sourceRepo, githubToken, false);
     
@@ -900,18 +890,13 @@ async function performSync(syncConfig, githubToken, env) {
     console.log(`🔍 验证源分支: ${syncConfig.sourceBranch}`);
     await testBranchExistence(syncConfig.sourceOwner, syncConfig.sourceRepo, syncConfig.sourceBranch, githubToken);
     
-    // 3. 验证目标仓库存在性
+    // 3. 验证目标仓库存在性（需要写入权限）
     console.log(`🔍 验证目标仓库: ${syncConfig.targetOwner}/${syncConfig.targetRepo}`);
     await testRepositoryAccess(syncConfig.targetOwner, syncConfig.targetRepo, githubToken, true);
     
-    // 4. 验证目标仓库分支存在性 - 这里需要特别注意
+    // 4. 验证目标仓库分支存在性
     console.log(`🔍 验证目标分支: ${syncConfig.targetBranch}`);
-    try {
-      await testBranchExistence(syncConfig.targetOwner, syncConfig.targetRepo, syncConfig.targetBranch, githubToken);
-    } catch (error) {
-      // 如果目标分支不存在，提供更明确的错误信息
-      throw new Error(`目标分支 "${syncConfig.targetBranch}" 不存在于仓库 ${syncConfig.targetOwner}/${syncConfig.targetRepo} 中。请先创建该分支。\n错误详情: ${error.message}`);
-    }
+    await testBranchExistence(syncConfig.targetOwner, syncConfig.targetRepo, syncConfig.targetBranch, githubToken);
     
     // 5. 获取源仓库的最新提交
     console.log(`📥 获取源仓库提交...`);
@@ -944,14 +929,9 @@ async function performSync(syncConfig, githubToken, env) {
     console.log(`🔀 创建合并提交...`);
     const mergeUrl = `https://api.github.com/repos/${syncConfig.targetOwner}/${syncConfig.targetRepo}/merges`;
     
-    // 使用正确的 head 格式
-    const head = syncConfig.sourceOwner === syncConfig.targetOwner 
-      ? syncConfig.sourceBranch 
-      : `${syncConfig.sourceOwner}:${syncConfig.sourceBranch}`;
-    
     const mergeData = {
       base: syncConfig.targetBranch,
-      head: head,
+      head: `${syncConfig.sourceOwner}:${syncConfig.sourceBranch}`,
       commit_message: `🔀 自动同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}@${syncConfig.sourceBranch}\n\n源提交: ${sourceCommit.sha.substring(0, 7)}\n源消息: ${sourceCommit.commit.message.split('\n')[0]}`
     };
     
@@ -964,8 +944,6 @@ async function performSync(syncConfig, githubToken, env) {
     if (githubToken) {
       headers['Authorization'] = `token ${githubToken}`;
     }
-    
-    console.log('合并请求数据:', JSON.stringify(mergeData, null, 2));
     
     const mergeResponse = await fetch(mergeUrl, {
       method: 'POST',
@@ -1003,25 +981,60 @@ async function performSync(syncConfig, githubToken, env) {
         sourceCommit: sourceCommit.sha,
         targetCommit: targetCommit.sha
       };
+    } else if (mergeResponse.status === 409) {
+      // 合并冲突
+      const errorData = await mergeResponse.json();
+      console.error(`❌ 同步失败: 合并冲突`, errorData);
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: '合并冲突，需要手动解决'
+      };
+    } else if (mergeResponse.status === 403) {
+      // 权限不足
+      let errorMessage = '权限不足';
+      try {
+        const errorData = await mergeResponse.json();
+        if (errorData.message) {
+          errorMessage = errorData.message;
+        }
+      } catch (e) {
+        // 如果无法解析错误信息，使用默认消息
+      }
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: `合并失败: ${errorMessage}。请确保：\n1. 对目标仓库 ${syncConfig.targetOwner}/${syncConfig.targetRepo} 有写入权限\n2. 源仓库 ${syncConfig.sourceOwner}/${syncConfig.sourceRepo} 是公开的`
+      };
+    } else if (mergeResponse.status === 404) {
+      // 资源未找到
+      let errorMessage = '资源未找到';
+      try {
+        const errorData = await mergeResponse.json();
+        if (errorData.message) {
+          errorMessage = errorData.message;
+        }
+      } catch (e) {
+        // 如果无法解析错误信息，使用默认消息
+      }
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: `合并失败: ${errorMessage}。请确认：\n1. 目标仓库存在且有写入权限\n2. 源仓库是公开的\n3. 分支名称正确`
+      };
     } else {
+      // 其他错误
       let errorMessage = `GitHub API错误: ${mergeResponse.status}`;
       try {
         const errorData = await mergeResponse.json();
         if (errorData.message) {
           errorMessage = errorData.message;
         }
-        console.error('合并错误详情:', errorData);
       } catch (e) {
         // 如果无法解析错误信息，使用状态码
-      }
-      
-      // 根据不同的状态码提供更具体的错误信息
-      if (mergeResponse.status === 404) {
-        errorMessage = `合并失败: ${errorMessage}\n\n可能的原因：\n1. 目标分支 "${syncConfig.targetBranch}" 不存在\n2. 源分支 "${syncConfig.sourceBranch}" 不存在\n3. 仓库权限不足\n4. 仓库不存在或拼写错误`;
-      } else if (mergeResponse.status === 409) {
-        errorMessage = `合并冲突: ${errorMessage}\n\n需要手动解决合并冲突`;
-      } else if (mergeResponse.status === 403) {
-        errorMessage = `权限不足: ${errorMessage}\n\n请确保：\n1. GitHub Token 有写入目标仓库的权限\n2. 对源仓库至少有读取权限\n3. 没有触发API速率限制`;
       }
       
       console.error(`❌ 同步失败: ${mergeResponse.status}`, errorMessage);
