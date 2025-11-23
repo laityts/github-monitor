@@ -892,35 +892,6 @@ async function performSync(syncConfig, githubToken, env) {
   try {
     console.log(`🔄 开始同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}:${syncConfig.sourceBranch} → ${syncConfig.targetOwner}/${syncConfig.targetRepo}:${syncConfig.targetBranch}`);
     
-    // 在合并前再次验证分支存在性
-    console.log(`🔍 最终验证分支存在性...`);
-    
-    // 验证源分支
-    const sourceBranchUrl = `https://api.github.com/repos/${syncConfig.sourceOwner}/${syncConfig.sourceRepo}/branches/${syncConfig.sourceBranch}`;
-    const sourceBranchResponse = await fetch(sourceBranchUrl, {
-      headers: {
-        'Authorization': `token ${githubToken}`,
-        'User-Agent': 'GitHub-Monitor-Bot'
-      }
-    });
-    
-    if (!sourceBranchResponse.ok) {
-      throw new Error(`源分支 "${syncConfig.sourceBranch}" 不存在或无法访问: ${sourceBranchResponse.status}`);
-    }
-    
-    // 验证目标分支
-    const targetBranchUrl = `https://api.github.com/repos/${syncConfig.targetOwner}/${syncConfig.targetRepo}/branches/${syncConfig.targetBranch}`;
-    const targetBranchResponse = await fetch(targetBranchUrl, {
-      headers: {
-        'Authorization': `token ${githubToken}`,
-        'User-Agent': 'GitHub-Monitor-Bot'
-      }
-    });
-    
-    if (!targetBranchResponse.ok) {
-      throw new Error(`目标分支 "${syncConfig.targetBranch}" 不存在或无法访问: ${targetBranchResponse.status}`);
-    }
-      
     // 1. 验证源仓库存在性
     console.log(`🔍 验证源仓库: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}`);
     await testRepositoryAccess(syncConfig.sourceOwner, syncConfig.sourceRepo, githubToken, false);
