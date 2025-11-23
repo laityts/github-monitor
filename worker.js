@@ -52,7 +52,8 @@ const STORAGE_KEYS = {
   GITHUB_TOKEN: 'github_token',
   LAST_CHECK_TIME: 'last_check_time',
   LAST_CRON_LOG: 'last_cron_log',
-  CRON_NOTIFICATION_ENABLED: 'cron_notification_enabled' // 新增：定时任务通知开关
+  CRON_NOTIFICATION_ENABLED: 'cron_notification_enabled',
+  SYNC_CONFIGS: 'sync_configs' // 新增：同步配置
 };
 
 // ==================== CRON 执行处理 ====================
@@ -235,7 +236,10 @@ async function handleDashboard(request, env, url) {
         'update_settings': () => handleUpdateSettings(formData, env),
         'test_telegram': () => handleTestTelegram(env),
         'test_github': () => handleTestGithub(env),
-        'change_password': () => handleChangePassword(formData, env)
+        'change_password': () => handleChangePassword(formData, env),
+        'add_sync': () => handleAddSyncConfig(formData, env), // 新增：添加同步配置
+        'delete_sync': () => handleDeleteSyncConfig(formData, env), // 新增：删除同步配置
+        'test_sync': () => handleTestSync(formData, env) // 新增：测试同步
       };
 
       if (actionHandlers[action]) {
@@ -320,6 +324,126 @@ async function handleManualCheck(env) {
 async function handleClearRepos(env) {
   await saveRepoList([], env);
   return showDashboard(env, '已清空所有监控的仓库');
+}
+
+// ==================== 同步配置管理函数 ====================
+async function handleAddSyncConfig(formData, env) {
+  const sourceOwner = formData.get('source_owner')?.trim();
+  const sourceRepo = formData.get('source_repo')?.trim();
+  const sourceBranch = formData.get('source_branch')?.trim();
+  const targetOwner = formData.get('target_owner')?.trim();
+  const targetRepo = formData.get('target_repo')?.trim();
+  const targetBranch = formData.get('target_branch')?.trim();
+  const syncEnabled = formData.get('sync_enabled') === 'on';
+  
+  if (!sourceOwner || !sourceRepo || !targetOwner || !targetRepo) {
+    return showDashboard(env, '错误：源仓库和目标仓库的所有者和名称不能为空');
+  }
+  
+  if (!sourceBranch) sourceBranch = 'main';
+  if (!targetBranch) targetBranch = 'main';
+  
+  try {
+    const syncConfigs = await getSyncConfigs(env);
+    const settings = await getSettings(env);
+    
+    // 检查是否已存在
+    const exists = syncConfigs.some(config => 
+      config.sourceOwner === sourceOwner && 
+      config.sourceRepo === sourceRepo && 
+      config.sourceBranch === sourceBranch &&
+      config.targetOwner === targetOwner && 
+      config.targetRepo === targetRepo && 
+      config.targetBranch === targetBranch
+    );
+    
+    if (exists) {
+      return showDashboard(env, '错误：该同步配置已存在');
+    }
+    
+    // 验证源仓库是否存在
+    await fetchLatestCommit(sourceOwner, sourceRepo, sourceBranch, settings.github_token);
+    
+    // 验证目标仓库是否存在且有写入权限
+    await testRepositoryAccess(targetOwner, targetRepo, settings.github_token);
+    
+    // 添加到同步配置列表
+    syncConfigs.push({
+      sourceOwner,
+      sourceRepo,
+      sourceBranch,
+      targetOwner,
+      targetRepo,
+      targetBranch,
+      enabled: syncEnabled,
+      lastSync: null,
+      lastError: null
+    });
+    
+    await saveSyncConfigs(syncConfigs, env);
+    
+    return showDashboard(env, `成功：已添加同步配置 ${sourceOwner}/${sourceRepo}:${sourceBranch} → ${targetOwner}/${targetRepo}:${targetBranch}`);
+  } catch (error) {
+    return showDashboard(env, `错误：无法添加同步配置 - ${error.message}`);
+  }
+}
+
+async function handleDeleteSyncConfig(formData, env) {
+  const sourceOwner = formData.get('source_owner');
+  const sourceRepo = formData.get('source_repo');
+  const sourceBranch = formData.get('source_branch');
+  const targetOwner = formData.get('target_owner');
+  const targetRepo = formData.get('target_repo');
+  const targetBranch = formData.get('target_branch');
+  
+  const syncConfigs = await getSyncConfigs(env);
+  const filteredConfigs = syncConfigs.filter(config => 
+    !(config.sourceOwner === sourceOwner && 
+      config.sourceRepo === sourceRepo && 
+      config.sourceBranch === sourceBranch &&
+      config.targetOwner === targetOwner && 
+      config.targetRepo === targetRepo && 
+      config.targetBranch === targetBranch)
+  );
+  
+  await saveSyncConfigs(filteredConfigs, env);
+  
+  return showDashboard(env, `成功：已删除同步配置 ${sourceOwner}/${sourceRepo}:${sourceBranch} → ${targetOwner}/${targetRepo}:${targetBranch}`);
+}
+
+async function handleTestSync(formData, env) {
+  const sourceOwner = formData.get('source_owner');
+  const sourceRepo = formData.get('source_repo');
+  const sourceBranch = formData.get('source_branch');
+  const targetOwner = formData.get('target_owner');
+  const targetRepo = formData.get('target_repo');
+  const targetBranch = formData.get('target_branch');
+  
+  try {
+    const settings = await getSettings(env);
+    
+    if (!settings.github_token) {
+      return showDashboard(env, '错误：请先配置GitHub Token');
+    }
+    
+    // 测试同步功能
+    const result = await performSync({
+      sourceOwner,
+      sourceRepo,
+      sourceBranch,
+      targetOwner,
+      targetRepo,
+      targetBranch
+    }, settings.github_token, env);
+    
+    if (result.success) {
+      return showDashboard(env, '同步测试成功！配置正确，可以正常同步。');
+    } else {
+      return showDashboard(env, `同步测试失败: ${result.error}`);
+    }
+  } catch (error) {
+    return showDashboard(env, `同步测试失败: ${error.message}`);
+  }
 }
 
 // ==================== 设置管理函数 ====================
@@ -497,6 +621,16 @@ async function getLastCronLog(env) {
   }
 }
 
+// ==================== 同步配置存储函数 ====================
+async function getSyncConfigs(env) {
+  const syncConfigs = await env.STORAGE.get(STORAGE_KEYS.SYNC_CONFIGS, 'json');
+  return syncConfigs || [];
+}
+
+async function saveSyncConfigs(syncConfigs, env) {
+  await env.STORAGE.put(STORAGE_KEYS.SYNC_CONFIGS, JSON.stringify(syncConfigs));
+}
+
 // ==================== GitHub API 函数 ====================
 async function fetchLatestCommit(owner, repo, branch, githubToken = null) {
   const url = `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch}&per_page=1`;
@@ -595,6 +729,231 @@ async function fetchCommitsBetween(owner, repo, branch, sinceCommit, githubToken
   }
 }
 
+// ==================== 同步功能函数 ====================
+async function testRepositoryAccess(owner, repo, githubToken) {
+  const url = `https://api.github.com/repos/${owner}/${repo}`;
+  
+  const headers = {
+    'User-Agent': 'GitHub-Monitor-Bot',
+    'Accept': 'application/vnd.github.v3+json',
+    'Authorization': `token ${githubToken}`
+  };
+  
+  const response = await fetch(url, { headers });
+  
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error('目标仓库不存在');
+    } else if (response.status === 403) {
+      throw new Error('没有目标仓库的访问权限');
+    } else {
+      throw new Error(`GitHub API错误: ${response.status} ${response.statusText}`);
+    }
+  }
+  
+  const repoData = await response.json();
+  
+  // 检查是否有写入权限（需要admin或push权限）
+  if (!repoData.permissions || (!repoData.permissions.push && !repoData.permissions.admin)) {
+    throw new Error('没有目标仓库的写入权限');
+  }
+  
+  return repoData;
+}
+
+async function performSync(syncConfig, githubToken, env) {
+  try {
+    console.log(`🔄 开始同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}:${syncConfig.sourceBranch} → ${syncConfig.targetOwner}/${syncConfig.targetRepo}:${syncConfig.targetBranch}`);
+    
+    // 1. 获取源仓库的最新提交
+    const sourceCommit = await fetchLatestCommit(
+      syncConfig.sourceOwner, 
+      syncConfig.sourceRepo, 
+      syncConfig.sourceBranch, 
+      githubToken
+    );
+    
+    // 2. 获取目标仓库的最新提交
+    const targetCommit = await fetchLatestCommit(
+      syncConfig.targetOwner, 
+      syncConfig.targetRepo, 
+      syncConfig.targetBranch, 
+      githubToken
+    );
+    
+    // 3. 检查是否需要同步（源仓库有更新）
+    if (sourceCommit.sha === targetCommit.sha) {
+      return { 
+        success: true, 
+        synced: false, 
+        message: '源仓库和目标仓库已经同步，无需更新'
+      };
+    }
+    
+    // 4. 创建合并提交
+    const mergeUrl = `https://api.github.com/repos/${syncConfig.targetOwner}/${syncConfig.targetRepo}/merges`;
+    
+    const mergeData = {
+      base: syncConfig.targetBranch,
+      head: `${syncConfig.sourceOwner}:${syncConfig.sourceBranch}`,
+      commit_message: `🔀 自动同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}@${syncConfig.sourceBranch}\n\n源提交: ${sourceCommit.sha.substring(0, 7)}\n源消息: ${sourceCommit.commit.message.split('\n')[0]}`
+    };
+    
+    const headers = {
+      'User-Agent': 'GitHub-Monitor-Bot',
+      'Accept': 'application/vnd.github.v3+json',
+      'Authorization': `token ${githubToken}`,
+      'Content-Type': 'application/json'
+    };
+    
+    const mergeResponse = await fetch(mergeUrl, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(mergeData)
+    });
+    
+    if (mergeResponse.status === 201) {
+      // 合并成功
+      const mergeResult = await mergeResponse.json();
+      console.log(`✅ 同步成功: 创建合并提交 ${mergeResult.sha}`);
+      
+      // 更新同步配置的最后同步时间
+      const syncConfigs = await getSyncConfigs(env);
+      const configIndex = syncConfigs.findIndex(config => 
+        config.sourceOwner === syncConfig.sourceOwner && 
+        config.sourceRepo === syncConfig.sourceRepo && 
+        config.sourceBranch === syncConfig.sourceBranch &&
+        config.targetOwner === syncConfig.targetOwner && 
+        config.targetRepo === syncConfig.targetRepo && 
+        config.targetBranch === syncConfig.targetBranch
+      );
+      
+      if (configIndex !== -1) {
+        syncConfigs[configIndex].lastSync = new Date().toISOString();
+        syncConfigs[configIndex].lastError = null;
+        await saveSyncConfigs(syncConfigs, env);
+      }
+      
+      return { 
+        success: true, 
+        synced: true, 
+        message: '同步成功',
+        mergeSha: mergeResult.sha,
+        sourceCommit: sourceCommit.sha,
+        targetCommit: targetCommit.sha
+      };
+    } else if (mergeResponse.status === 409) {
+      // 合并冲突
+      const errorData = await mergeResponse.json();
+      console.error(`❌ 同步失败: 合并冲突`, errorData);
+      
+      // 更新同步配置的最后错误信息
+      const syncConfigs = await getSyncConfigs(env);
+      const configIndex = syncConfigs.findIndex(config => 
+        config.sourceOwner === syncConfig.sourceOwner && 
+        config.sourceRepo === syncConfig.sourceRepo && 
+        config.sourceBranch === syncConfig.sourceBranch &&
+        config.targetOwner === syncConfig.targetOwner && 
+        config.targetRepo === syncConfig.targetRepo && 
+        config.targetBranch === syncConfig.targetBranch
+      );
+      
+      if (configIndex !== -1) {
+        syncConfigs[configIndex].lastError = '合并冲突，需要手动解决';
+        await saveSyncConfigs(syncConfigs, env);
+      }
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: '合并冲突，需要手动解决'
+      };
+    } else {
+      // 其他错误
+      const errorData = await mergeResponse.text();
+      console.error(`❌ 同步失败: ${mergeResponse.status}`, errorData);
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: `GitHub API错误: ${mergeResponse.status}`
+      };
+    }
+  } catch (error) {
+    console.error(`❌ 同步异常:`, error);
+    return { 
+      success: false, 
+      synced: false, 
+      error: error.message
+    };
+  }
+}
+
+async function handleRepositorySync(repoInfo, latestCommit, env) {
+  try {
+    const syncConfigs = await getSyncConfigs(env);
+    const settings = await getSettings(env);
+    
+    if (!settings.github_token) {
+      console.log('⚠️ GitHub Token未配置，跳过同步');
+      return;
+    }
+    
+    // 查找与此仓库相关的同步配置
+    const relevantConfigs = syncConfigs.filter(config => 
+      config.enabled &&
+      config.sourceOwner === repoInfo.owner && 
+      config.sourceRepo === repoInfo.repo && 
+      config.sourceBranch === repoInfo.branch
+    );
+    
+    if (relevantConfigs.length === 0) {
+      return;
+    }
+    
+    console.log(`🔄 发现 ${relevantConfigs.length} 个同步配置需要处理`);
+    
+    for (const config of relevantConfigs) {
+      try {
+        const syncResult = await performSync(config, settings.github_token, env);
+        
+        // 发送同步结果通知
+        if (settings.tg_bot_token && settings.tg_chat_id) {
+          let message;
+          
+          if (syncResult.success && syncResult.synced) {
+            message = `✅ <b>同步成功</b>\n\n` +
+              `📦 <b>源仓库:</b> ${config.sourceOwner}/${config.sourceRepo}:${config.sourceBranch}\n` +
+              `🎯 <b>目标仓库:</b> ${config.targetOwner}/${config.targetRepo}:${config.targetBranch}\n` +
+              `🔀 <b>合并提交:</b> ${syncResult.mergeSha.substring(0, 7)}\n` +
+              `⏰ <b>同步时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n\n` +
+              `<i>源仓库的更新已成功同步到目标仓库</i>`;
+          } else if (syncResult.success && !syncResult.synced) {
+            // 无需同步的情况，不发送通知
+            continue;
+          } else {
+            message = `❌ <b>同步失败</b>\n\n` +
+              `📦 <b>源仓库:</b> ${config.sourceOwner}/${config.sourceRepo}:${config.sourceBranch}\n` +
+              `🎯 <b>目标仓库:</b> ${config.targetOwner}/${config.targetRepo}:${config.targetBranch}\n` +
+              `🚨 <b>错误原因:</b> ${syncResult.error}\n` +
+              `⏰ <b>同步时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n\n` +
+              `<i>请检查仓库权限或解决合并冲突</i>`;
+          }
+          
+          await sendTelegramMessage(settings.tg_bot_token, settings.tg_chat_id, message);
+        }
+        
+        // 添加延迟以避免触发GitHub API限制
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (syncError) {
+        console.error(`❌ 同步配置处理失败:`, syncError);
+      }
+    }
+  } catch (error) {
+    console.error('❌ 处理仓库同步时出错:', error);
+  }
+}
+
 // ==================== Telegram 函数 ====================
 async function sendCronLogToTelegram(cronLog, env) {
   try {
@@ -638,12 +997,14 @@ function buildCronLogMessage(cronLog, env) {
     const checkedCount = (result.checkedCount !== undefined && result.checkedCount !== null) ? result.checkedCount : 0;
     const updatedCount = (result.updatedCount !== undefined && result.updatedCount !== null) ? result.updatedCount : 0;
     const errorCount = (result.errorCount !== undefined && result.errorCount !== null) ? result.errorCount : 0;
+    const syncCount = (result.syncCount !== undefined && result.syncCount !== null) ? result.syncCount : 0;
     
     resultDetails = `
 📊 <b>检查结果:</b>
    • 已检查仓库: ${checkedCount}
    • 发现更新: ${updatedCount}
    • 错误数量: ${errorCount}
+   • 同步操作: ${syncCount}
 💬 <b>总结:</b> ${result.message || '检查完成'}
     `.trim();
   } else if (cronLog.error) {
@@ -797,7 +1158,8 @@ async function checkAllRepos(env) {
         message: '没有监控的仓库需要检查',
         checkedCount: 0,
         updatedCount: 0,
-        errorCount: 0
+        errorCount: 0,
+        syncCount: 0
       };
     }
     
@@ -814,6 +1176,7 @@ async function checkAllRepos(env) {
     let checkedCount = 0;
     let updatedCount = 0;
     let errorCount = 0;
+    let syncCount = 0;
     
     for (const repo of repoList) {
       try {
@@ -872,6 +1235,14 @@ async function checkAllRepos(env) {
             console.log(`✅ Telegram通知发送成功`);
           }
           
+          // 处理仓库同步
+          try {
+            await handleRepositorySync(repo, latestCommit, env);
+            syncCount++;
+          } catch (syncError) {
+            console.error(`❌ 处理仓库同步失败:`, syncError);
+          }
+          
           await saveLastCommit(repo.owner, repo.repo, repo.branch, latestCommit.sha, env);
         } else {
           console.log(`✅ 没有新提交`);
@@ -897,14 +1268,15 @@ async function checkAllRepos(env) {
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     
-    const message = `检查完成: 已检查 ${checkedCount} 个仓库，发现 ${updatedCount} 个更新，${errorCount} 个错误`;
+    const message = `检查完成: 已检查 ${checkedCount} 个仓库，发现 ${updatedCount} 个更新，${errorCount} 个错误，处理 ${syncCount} 个同步`;
     console.log(`✅ ${message}`);
     return { 
       success: true, 
       message,
       checkedCount: checkedCount || 0,
       updatedCount: updatedCount || 0,
-      errorCount: errorCount || 0
+      errorCount: errorCount || 0,
+      syncCount: syncCount || 0
     };
   } catch (error) {
     console.error('❌ 检查更新时出错:', error);
@@ -913,7 +1285,8 @@ async function checkAllRepos(env) {
       error: error.message,
       checkedCount: 0,
       updatedCount: 0,
-      errorCount: 1
+      errorCount: 1,
+      syncCount: 0
     };
   }
 }
@@ -1234,7 +1607,8 @@ async function showDashboard(env, message = '') {
     const settings = await getSettings(env);
     const lastCheckTime = await getLastCheckTime(env);
     const lastCronLog = await getLastCronLog(env);
-    const html = generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog);
+    const syncConfigs = await getSyncConfigs(env);
+    const html = generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog, syncConfigs);
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' }
     });
@@ -1244,7 +1618,21 @@ async function showDashboard(env, message = '') {
   }
 }
 
-function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog) {
+function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastCronLog, syncConfigs) {
+  // 辅助函数：转义HTML特殊字符
+  function escapeHtml(text) {
+    if (!text) return '';
+    const map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+  }
+
+  // 生成仓库卡片
   const repoCards = repoList.map(repo => `
     <div class="repo-card">
       <div class="repo-info">
@@ -1273,18 +1661,54 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
     </div>
   `).join('');
 
-  // 辅助函数：转义HTML特殊字符
-  function escapeHtml(text) {
-    if (!text) return '';
-    const map = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#039;'
-    };
-    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
-  }
+  // 生成同步配置卡片
+  const syncCards = syncConfigs.map(config => `
+    <div class="repo-card">
+      <div class="repo-info">
+        <div class="repo-icon" style="background: linear-gradient(135deg, #8b5cf6, #a855f7);">
+          <i class="fas fa-sync-alt"></i>
+        </div>
+        <div class="repo-details">
+          <h3>${escapeHtml(config.sourceOwner)}/${escapeHtml(config.sourceRepo)}:${escapeHtml(config.sourceBranch)}</h3>
+          <p class="repo-branch">
+            <i class="fas fa-arrow-right"></i>
+            ${escapeHtml(config.targetOwner)}/${escapeHtml(config.targetRepo)}:${escapeHtml(config.targetBranch)}
+          </p>
+          <div class="sync-status">
+            ${config.lastSync ? `<span class="status-success"><i class="fas fa-check"></i> 最后同步: ${new Date(config.lastSync).toLocaleString('zh-CN')}</span>` : ''}
+            ${config.lastError ? `<span class="status-error"><i class="fas fa-exclamation-triangle"></i> ${escapeHtml(config.lastError)}</span>` : ''}
+            ${config.enabled ? '<span class="status-enabled"><i class="fas fa-toggle-on"></i> 已启用</span>' : '<span class="status-disabled"><i class="fas fa-toggle-off"></i> 已禁用</span>'}
+          </div>
+        </div>
+      </div>
+      <div class="repo-actions">
+        <form method="post" class="inline-form">
+          <input type="hidden" name="action" value="test_sync">
+          <input type="hidden" name="source_owner" value="${escapeHtml(config.sourceOwner)}">
+          <input type="hidden" name="source_repo" value="${escapeHtml(config.sourceRepo)}">
+          <input type="hidden" name="source_branch" value="${escapeHtml(config.sourceBranch)}">
+          <input type="hidden" name="target_owner" value="${escapeHtml(config.targetOwner)}">
+          <input type="hidden" name="target_repo" value="${escapeHtml(config.targetRepo)}">
+          <input type="hidden" name="target_branch" value="${escapeHtml(config.targetBranch)}">
+          <button type="submit" class="btn btn-info btn-sm">
+            <i class="fas fa-play"></i>
+          </button>
+        </form>
+        <form method="post" class="inline-form">
+          <input type="hidden" name="action" value="delete_sync">
+          <input type="hidden" name="source_owner" value="${escapeHtml(config.sourceOwner)}">
+          <input type="hidden" name="source_repo" value="${escapeHtml(config.sourceRepo)}">
+          <input type="hidden" name="source_branch" value="${escapeHtml(config.sourceBranch)}">
+          <input type="hidden" name="target_owner" value="${escapeHtml(config.targetOwner)}">
+          <input type="hidden" name="target_repo" value="${escapeHtml(config.targetRepo)}">
+          <input type="hidden" name="target_branch" value="${escapeHtml(config.targetBranch)}">
+          <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定要删除这个同步配置吗？')">
+            <i class="fas fa-trash"></i>
+          </button>
+        </form>
+      </div>
+    </div>
+  `).join('');
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1593,6 +2017,44 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
             display: flex;
             align-items: center;
             gap: 6px;
+        }
+        
+        .sync-status {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .status-success, .status-error, .status-enabled, .status-disabled {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        
+        .status-success {
+            background: #f0fdf4;
+            color: #166534;
+            border: 1px solid #bbf7d0;
+        }
+        
+        .status-error {
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+        
+        .status-enabled {
+            background: #f0f9ff;
+            color: #0369a1;
+            border: 1px solid #bae6fd;
+        }
+        
+        .status-disabled {
+            background: #f8fafc;
+            color: #64748b;
+            border: 1px solid #e2e8f0;
         }
         
         .stats-grid {
@@ -2025,6 +2487,84 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                 
                 <div class="card">
                     <div class="card-header">
+                        <h2><i class="fas fa-sync-alt"></i> 添加同步配置</h2>
+                    </div>
+                    <form method="post">
+                        <input type="hidden" name="action" value="add_sync">
+                        <div class="form-section">
+                            <div class="form-section-title">
+                                <i class="fas fa-download"></i> 源仓库配置
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="source_owner">源仓库所有者</label>
+                                    <div class="form-input">
+                                        <i class="fas fa-user"></i>
+                                        <input type="text" id="source_owner" name="source_owner" placeholder="例如：microsoft" required>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="source_repo">源仓库名称</label>
+                                    <div class="form-input">
+                                        <i class="fas fa-project-diagram"></i>
+                                        <input type="text" id="source_repo" name="source_repo" placeholder="例如：vscode" required>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="source_branch">源分支名称</label>
+                                <div class="form-input">
+                                    <i class="fas fa-code-branch"></i>
+                                    <input type="text" id="source_branch" name="source_branch" placeholder="例如：main（可选，默认为main）">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-section">
+                            <div class="form-section-title">
+                                <i class="fas fa-upload"></i> 目标仓库配置
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="target_owner">目标仓库所有者</label>
+                                    <div class="form-input">
+                                        <i class="fas fa-user"></i>
+                                        <input type="text" id="target_owner" name="target_owner" placeholder="例如：my-org" required>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="target_repo">目标仓库名称</label>
+                                    <div class="form-input">
+                                        <i class="fas fa-project-diagram"></i>
+                                        <input type="text" id="target_repo" name="target_repo" placeholder="例如：vscode-fork" required>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="target_branch">目标分支名称</label>
+                                <div class="form-input">
+                                    <i class="fas fa-code-branch"></i>
+                                    <input type="text" id="target_branch" name="target_branch" placeholder="例如：main（可选，默认为main）">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="toggle-label">
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="sync_enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="toggle-text">启用同步</span>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加同步配置
+                        </button>
+                    </form>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
                         <h2><i class="fas fa-list"></i> 监控中的仓库</h2>
                         <div class="action-buttons">
                             <form method="post" class="inline-form">
@@ -2051,6 +2591,24 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                             <i class="fas fa-inbox"></i>
                             <h3>暂无监控仓库</h3>
                             <p>请在上方添加要监控的GitHub仓库</p>
+                        </div>
+                    `}
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-sync"></i> 同步配置列表</h2>
+                    </div>
+                    
+                    ${syncConfigs.length > 0 ? `
+                        <div class="repo-grid">
+                            ${syncCards}
+                        </div>
+                    ` : `
+                        <div class="empty-state">
+                            <i class="fas fa-sync-alt"></i>
+                            <h3>暂无同步配置</h3>
+                            <p>请在上方添加同步配置</p>
                         </div>
                     `}
                 </div>
@@ -2207,8 +2765,8 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                             <span class="stat-label">监控仓库</span>
                         </div>
                         <div class="stat-card">
-                            <span class="stat-number"><i class="fas fa-check"></i></span>
-                            <span class="stat-label">运行中</span>
+                            <span class="stat-number">${syncConfigs.length}</span>
+                            <span class="stat-label">同步配置</span>
                         </div>
                     </div>
                     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
@@ -2224,7 +2782,7 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                             <p class="cron-log-detail"><strong>状态:</strong> ${lastCronLog.success ? '✅ 成功' : '❌ 失败'}</p>
                             <p class="cron-log-detail"><strong>时长:</strong> ${escapeHtml(lastCronLog.duration)}</p>
                             ${lastCronLog.result && lastCronLog.result.checkedCount !== undefined ? `
-                            <p class="cron-log-detail"><strong>检查:</strong> ${lastCronLog.result.checkedCount} 仓库, ${lastCronLog.result.updatedCount} 更新, ${lastCronLog.result.errorCount} 错误</p>
+                            <p class="cron-log-detail"><strong>检查:</strong> ${lastCronLog.result.checkedCount} 仓库, ${lastCronLog.result.updatedCount} 更新, ${lastCronLog.result.errorCount} 错误, ${lastCronLog.result.syncCount} 同步</p>
                             ` : ''}
                         </div>
                         ` : ''}
@@ -2248,6 +2806,14 @@ function generateDashboardHTML(repoList, settings, message, lastCheckTime, lastC
                             <li>通过 @BotFather 创建机器人获取Token</li>
                             <li>向机器人发送消息后获取Chat ID</li>
                             <li>点击"测试通知"验证配置</li>
+                        </ul>
+                        
+                        <p><strong>同步功能说明:</strong></p>
+                        <ul style="margin-left: 20px;">
+                            <li>源仓库更新时自动同步到目标仓库</li>
+                            <li>使用GitHub合并API实现</li>
+                            <li>遇到合并冲突时会自动终止</li>
+                            <li>需要目标仓库的写入权限</li>
                         </ul>
                         
                         <p><strong>定时任务通知:</strong></p>
