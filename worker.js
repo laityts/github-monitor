@@ -375,11 +375,11 @@ async function handleAddSyncConfig(formData, env) {
       return showDashboard(env, '错误：该同步配置已存在');
     }
     
-    // 逐步验证配置
+    // 逐步验证配置 - 源仓库只需要读取权限
     const validationSteps = [
-      { step: '验证源仓库', action: () => testRepositoryAccess(sourceOwner, sourceRepo, settings.github_token) },
+      { step: '验证源仓库', action: () => testRepositoryAccess(sourceOwner, sourceRepo, settings.github_token, false) },
       { step: '验证源分支', action: () => testBranchExistence(sourceOwner, sourceRepo, sourceBranch, settings.github_token) },
-      { step: '验证目标仓库', action: () => testRepositoryAccess(targetOwner, targetRepo, settings.github_token) },
+      { step: '验证目标仓库', action: () => testRepositoryAccess(targetOwner, targetRepo, settings.github_token, true) },
       { step: '验证目标分支', action: () => testBranchExistence(targetOwner, targetRepo, targetBranch, settings.github_token) }
     ];
     
@@ -451,11 +451,11 @@ async function handleTestSync(formData, env) {
       return showDashboard(env, '❌ 错误：请先配置 GitHub Token');
     }
     
-    // 详细验证步骤
+    // 详细验证步骤 - 源仓库只需要读取权限
     const validationSteps = [
       { 
         name: '源仓库访问', 
-        action: () => testRepositoryAccess(sourceOwner, sourceRepo, settings.github_token),
+        action: () => testRepositoryAccess(sourceOwner, sourceRepo, settings.github_token, false),
         error: '无法访问源仓库'
       },
       { 
@@ -465,8 +465,8 @@ async function handleTestSync(formData, env) {
       },
       { 
         name: '目标仓库访问', 
-        action: () => testRepositoryAccess(targetOwner, targetRepo, settings.github_token),
-        error: '无法访问目标仓库'
+        action: () => testRepositoryAccess(targetOwner, targetRepo, settings.github_token, true),
+        error: '无法访问目标仓库或没有写入权限'
       },
       { 
         name: '目标分支存在', 
@@ -792,7 +792,7 @@ async function fetchCommitsBetween(owner, repo, branch, sinceCommit, githubToken
 }
 
 // ==================== 同步功能函数 ====================
-async function testRepositoryAccess(owner, repo, githubToken) {
+async function testRepositoryAccess(owner, repo, githubToken, requireWrite = false) {
   const url = `https://api.github.com/repos/${owner}/${repo}`;
   
   const headers = {
@@ -808,30 +808,11 @@ async function testRepositoryAccess(owner, repo, githubToken) {
   
   if (!response.ok) {
     if (response.status === 404) {
-      // 详细检查 404 原因
       let errorDetails = `仓库 ${owner}/${repo} 不存在`;
       
       // 检查是否是组织仓库
       if (owner.includes('-') || owner.includes('.')) {
         errorDetails += '\n⚠️ 注意：组织名称可能包含特殊字符，请确认拼写正确';
-      }
-      
-      // 检查仓库名称
-      if (repo.includes(' ') || repo.length === 0) {
-        errorDetails += '\n⚠️ 仓库名称无效，请确认没有空格且不为空';
-      }
-      
-      // 建议可能的正确名称
-      const suggestions = [];
-      if (repo.toLowerCase() !== repo) {
-        suggestions.push(`尝试使用小写: ${repo.toLowerCase()}`);
-      }
-      if (repo.includes('_')) {
-        suggestions.push(`尝试使用连字符: ${repo.replace(/_/g, '-')}`);
-      }
-      
-      if (suggestions.length > 0) {
-        errorDetails += `\n💡 建议: ${suggestions.join(', ')}`;
       }
       
       throw new Error(errorDetails);
@@ -841,7 +822,12 @@ async function testRepositoryAccess(owner, repo, githubToken) {
       if (remaining === '0') {
         throw new Error('GitHub API 速率限制已用完，请稍后重试');
       }
-      throw new Error(`没有 ${owner}/${repo} 的访问权限。请确保：\n1. 仓库是公开的\n2. 或者 Token 有访问私有仓库的权限`);
+      
+      if (requireWrite) {
+        throw new Error(`没有 ${owner}/${repo} 的写入权限。请确保：\n1. Token 有写入权限\n2. 仓库允许外部贡献者`);
+      } else {
+        throw new Error(`没有 ${owner}/${repo} 的读取权限。请确保：\n1. 仓库是公开的\n2. 或者 Token 有访问私有仓库的权限`);
+      }
     } else {
       throw new Error(`GitHub API 错误: ${response.status} ${response.statusText}`);
     }
@@ -854,8 +840,8 @@ async function testRepositoryAccess(owner, repo, githubToken) {
     throw new Error(`仓库 ${owner}/${repo} 是私有的，需要提供 GitHub Token`);
   }
   
-  // 如果有 Token，检查权限
-  if (githubToken && repoData.permissions) {
+  // 如果有 Token 且需要写入权限，检查权限
+  if (githubToken && repoData.permissions && requireWrite) {
     console.log(`仓库权限:`, repoData.permissions);
     
     if (!repoData.permissions.push && !repoData.permissions.admin) {
@@ -863,6 +849,7 @@ async function testRepositoryAccess(owner, repo, githubToken) {
     }
   }
   
+  // 对于只读访问，只要有仓库信息就认为成功
   return repoData;
 }
 
@@ -895,17 +882,17 @@ async function performSync(syncConfig, githubToken, env) {
   try {
     console.log(`🔄 开始同步: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}:${syncConfig.sourceBranch} → ${syncConfig.targetOwner}/${syncConfig.targetRepo}:${syncConfig.targetBranch}`);
     
-    // 1. 验证源仓库存在性
+    // 1. 验证源仓库存在性（只需要读取权限）
     console.log(`🔍 验证源仓库: ${syncConfig.sourceOwner}/${syncConfig.sourceRepo}`);
-    await testRepositoryAccess(syncConfig.sourceOwner, syncConfig.sourceRepo, githubToken);
+    await testRepositoryAccess(syncConfig.sourceOwner, syncConfig.sourceRepo, githubToken, false);
     
     // 2. 验证源仓库分支存在性
     console.log(`🔍 验证源分支: ${syncConfig.sourceBranch}`);
     await testBranchExistence(syncConfig.sourceOwner, syncConfig.sourceRepo, syncConfig.sourceBranch, githubToken);
     
-    // 3. 验证目标仓库存在性
+    // 3. 验证目标仓库存在性（需要写入权限）
     console.log(`🔍 验证目标仓库: ${syncConfig.targetOwner}/${syncConfig.targetRepo}`);
-    await testRepositoryAccess(syncConfig.targetOwner, syncConfig.targetRepo, githubToken);
+    await testRepositoryAccess(syncConfig.targetOwner, syncConfig.targetRepo, githubToken, true);
     
     // 4. 验证目标仓库分支存在性
     console.log(`🔍 验证目标分支: ${syncConfig.targetBranch}`);
@@ -1004,6 +991,23 @@ async function performSync(syncConfig, githubToken, env) {
         synced: false, 
         error: '合并冲突，需要手动解决'
       };
+    } else if (mergeResponse.status === 403) {
+      // 权限不足
+      let errorMessage = '权限不足';
+      try {
+        const errorData = await mergeResponse.json();
+        if (errorData.message) {
+          errorMessage = errorData.message;
+        }
+      } catch (e) {
+        // 如果无法解析错误信息，使用默认消息
+      }
+      
+      return { 
+        success: false, 
+        synced: false, 
+        error: `合并失败: ${errorMessage}。请确保：\n1. 对目标仓库 ${syncConfig.targetOwner}/${syncConfig.targetRepo} 有写入权限\n2. 源仓库 ${syncConfig.sourceOwner}/${syncConfig.sourceRepo} 是公开的`
+      };
     } else if (mergeResponse.status === 404) {
       // 资源未找到
       let errorMessage = '资源未找到';
@@ -1019,7 +1023,7 @@ async function performSync(syncConfig, githubToken, env) {
       return { 
         success: false, 
         synced: false, 
-        error: `合并失败: ${errorMessage}。请确认：\n1. 目标仓库存在且有写入权限\n2. 源仓库是公开的或Token有访问权限\n3. 分支名称正确`
+        error: `合并失败: ${errorMessage}。请确认：\n1. 目标仓库存在且有写入权限\n2. 源仓库是公开的\n3. 分支名称正确`
       };
     } else {
       // 其他错误
