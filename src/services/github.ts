@@ -139,4 +139,6 @@ export class GitHubClient {
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
     )
   }
+
+  hasToken(): boolean { return !!this.token }
 }

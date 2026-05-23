@@ -5,7 +5,7 @@ import { authMiddleware } from './auth/middleware'
 import { runCron } from './services/cron'
 import {
   loginRoute, logoutRoute,
-  dashboardRoute, reposRoute, settingsRoute, systemRoute,
+  dashboardRoute, reposRoute, settingsRoute, systemRoute, forkRoute,
 } from './routes'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -23,6 +23,7 @@ app.use('/*', authMiddleware)
 app.route('/', dashboardRoute)
 app.route('/repos', reposRoute)
 app.route('/settings', settingsRoute)
+app.route('/fork', forkRoute)
 app.route('/', systemRoute)
 
 export default {
