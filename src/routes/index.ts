@@ -1,0 +1,5 @@
+export { loginRoute, logoutRoute } from './auth'
+export { dashboardRoute } from './dashboard'
+export { reposRoute } from './repos'
+export { settingsRoute } from './settings'
+export { systemRoute } from './system'
