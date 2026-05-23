@@ -25,7 +25,7 @@
 | 视觉风格 | 极简浅色 + 深色可切换，跟随系统偏好 + cookie 记忆 |
 | KV 存储 | 重新设计键名 + 启动时**一次性**自动迁移 |
 | 认证 | PBKDF2 + HMAC 签名 session + 强制首次改密 + 失败 5 次锁定 10 分钟 + 「记住我」 |
-| 测试 | Vitest + `@cloudflare/vitest-pool-workers`（集成测试仅保留 auth-flow 与 migration） |
+| 测试 | Vitest（纯 Node 环境）。本地 Android 内核 `mmap_rnd_bits=24` 阻止 workerd 启动，故放弃 vitest-pool-workers 集成测试，仅保留单元测试。 |
 | 发布 | 直接覆盖现有 Worker；rollback 通过 `wrangler rollback` 或 git revert |
 | 交付节奏 | 单 PR + 阶段原子提交 |
 
@@ -76,16 +76,13 @@ github-monitor/
 │           ├── status-banner.tsx
 │           └── change-password-form.tsx
 ├── test/
-│   ├── unit/
-│   │   ├── crypto.test.ts
-│   │   ├── session.test.ts
-│   │   ├── rate-limit.test.ts
-│   │   ├── fork-detector.test.ts
-│   │   ├── message-builder.test.ts
-│   │   └── migration-unit.test.ts
-│   └── integration/
-│       ├── auth-flow.test.ts
-│       └── migration.test.ts
+│   └── unit/
+│       ├── crypto.test.ts
+│       ├── session.test.ts
+│       ├── rate-limit.test.ts
+│       ├── fork-detector.test.ts
+│       ├── message-builder.test.ts
+│       └── migration-unit.test.ts
 ├── wrangler.toml
 ├── tsconfig.json
 ├── vitest.config.ts
@@ -464,18 +461,17 @@ export async function runCron(env: Env): Promise<CronLog> {
 ### Vitest 配置（`vitest.config.ts`）
 
 ```ts
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config'
-export default defineWorkersConfig({
+import { defineConfig } from 'vitest/config'
+export default defineConfig({
   test: {
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: './wrangler.toml' },
-        miniflare: { kvNamespaces: ['STORAGE'] },
-      },
-    },
+    include: ['test/**/*.test.ts'],
   },
 })
 ```
+
+> 本地开发环境（Android 内核 `mmap_rnd_bits=24`）下 `workerd` 二进制无法启动 tcmalloc，
+> 因此放弃 `@cloudflare/vitest-pool-workers` 与配套集成测试，仅保留纯 Node 单元测试。
+> 端到端覆盖通过 Phase 11 中手工浏览器验收完成。
 
 ### 单元测试
 
@@ -486,14 +482,12 @@ export default defineWorkersConfig({
 | `auth/rate-limit.ts` | 5 次失败锁定、10 分钟解锁、成功清零 |
 | `services/telegram.ts` (build*) | commit 列表、>10 截断、HTML escape、fork-behind 提示 |
 | `services/fork-detector.ts` | 同名命中、404 兜底全量、parent 不匹配跳兜底、缓存读写、缓存过期重取、ahead/behind 计算 |
-| `storage/migration.ts` | 旧→新键正确性、`migration:version` 幂等、合并字段（telegram 拆分键）、缺失旧键不报错 |
+| `storage/migration.ts` | 旧→新键正确性、`migration:version` 幂等、合并字段（telegram 拆分键）、缺失旧键不报错（在 `migration-unit.test.ts` 中以手写 KV mock 进行） |
 
-### 集成测试（缩减至 2 项）
+### 集成测试
 
-| 流程 | 关键测试 |
-|------|----------|
-| `auth-flow.test.ts` | 未登录 → /login；正确密码 → cookie；错误 5 次 → 锁定；登出 → cookie 失效；记住我 cookie 属性差异 |
-| `migration.test.ts` | 预置旧键 → 启动 → 验证新键内容 + 旧键已删除 + `migration:version` 已写入 + 二次启动无副作用 |
+不再编写。原计划中的 `auth-flow.test.ts` 与 `migration.test.ts` 因本地无法运行 `workerd` 而取消；
+对应覆盖通过 Phase 11 浏览器手工验收完成。
 
 ### GitHub / Telegram mock
 
@@ -561,9 +555,9 @@ export default defineWorkersConfig({
 单 PR，按以下顺序提交：
 
 1. **chore: 添加 TS 工具链与 Hono 脚手架**（`package.json`、`tsconfig.json`、`vitest.config.ts`、`src/index.ts` 空 Hono app、`wrangler.toml` 改 main）
-2. **feat(storage): 重新设计 KV 键并实现迁移**（`storage/keys.ts`、`storage/migration.ts`、`migration.test.ts`）
+2. **feat(storage): 重新设计 KV 键并实现迁移**（`storage/keys.ts`、`storage/migration.ts`，单元测试在 Phase 3 内，与 crypto 一起补）
 3. **feat(lib): 加密原语**（`lib/crypto.ts`、`crypto.test.ts`）
-4. **feat(auth): PBKDF2 密码 + 签名 session + 限流 + 强制改密**（`auth/*`、`auth-flow.test.ts`、`session.test.ts`、`rate-limit.test.ts`）
+4. **feat(auth): PBKDF2 密码 + 签名 session + 限流 + 强制改密**（`auth/*`、`session.test.ts`、`rate-limit.test.ts`）
 5. **feat(services): GitHubClient 与 TelegramClient + 消息构建**（`services/github.ts`、`services/telegram.ts`、`message-builder.test.ts`）
 6. **feat(services): checker + cron**（`services/checker.ts`、`services/cron.ts`）
 7. **feat(views): 主题系统与基础 layout**（`views/theme.ts`、`views/layout.tsx`、`views/login.tsx`）
@@ -579,7 +573,7 @@ export default defineWorkersConfig({
 
 | 风险 | 缓解 |
 |------|------|
-| KV 迁移出错丢数据 | 每个 migrate* 函数先 put 再 delete；`migration.test.ts` 覆盖；发布前 Cloudflare 后台导出 KV 备份 |
+| KV 迁移出错丢数据 | 每个 migrate* 函数先 put 再 delete；`migration-unit.test.ts` 用手写 KV mock 覆盖；发布前 Cloudflare 后台导出 KV 备份 |
 | 用户已修改默认密码但本设计仍写入 `must-change-password` | 迁移时只在哈希 == SHA-256(`admin123`) 时设置标志 |
 | Fork 全量扫描慢（fork 多） | 1 小时 KV 缓存；首次访问 dashboard 时异步刷新；超时降级到「检测中…」+ 重试 |
 | Hono JSX 渲染性能 | 服务端 SSR 单次渲染开销极小（毫秒级），不构成瓶颈 |

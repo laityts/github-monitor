@@ -6,7 +6,7 @@
 
 **Architecture:** 单 Cloudflare Worker 部署，Hono 作为路由 + 中间件 + JSX 渲染框架。代码按 `lib/storage/auth/services/routes/views` 分层。KV 数据通过启动时一次性自动迁移到新键名空间。
 
-**Tech Stack:** TypeScript · Hono · `@cloudflare/workers-types` · Vitest + `@cloudflare/vitest-pool-workers` · Wrangler（内置 esbuild）
+**Tech Stack:** TypeScript · Hono · `@cloudflare/workers-types` · Vitest（纯 Node 单元测试）· Wrangler（内置 esbuild）
 
 **Spec:** [`docs/superpowers/specs/2026-05-23-ts-refactor-fork-display-design.md`](../specs/2026-05-23-ts-refactor-fork-display-design.md)
 
@@ -45,7 +45,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "deploy": "wrangler deploy"
@@ -54,7 +54,6 @@
     "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.0",
     "@cloudflare/workers-types": "^4.20250121.0",
     "typescript": "^5.5.0",
     "vitest": "~2.1.0",
@@ -82,7 +81,7 @@ Expected: 安装成功，生成 `node_modules/` 与 `package-lock.json`。
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
+    "types": ["@cloudflare/workers-types"],
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
     "strict": true,
@@ -159,18 +158,11 @@ export default {
 - [ ] **Step 1.6.1: 写入 `vitest.config.ts`**
 
 ```ts
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config'
+import { defineConfig } from 'vitest/config'
 
-export default defineWorkersConfig({
+export default defineConfig({
   test: {
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: './wrangler.toml' },
-        miniflare: {
-          kvNamespaces: ['STORAGE'],
-        },
-      },
-    },
+    include: ['test/**/*.test.ts'],
   },
 })
 ```
@@ -232,7 +224,8 @@ EOF
 - Create: `src/storage/sessions.ts`
 - Create: `src/storage/cron-log.ts`
 - Create: `src/storage/migration.ts`
-- Create: `test/integration/migration.test.ts`
+- Create: `test/unit/kv-mock.ts`
+- Create: `test/unit/migration.test.ts`
 
 ### Step 2.1 写键名常量
 
@@ -447,28 +440,22 @@ export async function setLastCheckTime(env: Env, value: string): Promise<void> {
 }
 ```
 
-### Step 2.3 写迁移测试（先写测试）
+### Step 2.3 写迁移单元测试（先写测试，手写 KV mock）
 
-- [ ] **Step 2.3.1: 写入 `test/integration/migration.test.ts`**
+- [ ] **Step 2.3.1: 写入 `test/unit/migration.test.ts`**
 
 ```ts
-import { env } from 'cloudflare:test'
 import { describe, expect, it, beforeEach } from 'vitest'
 import { runMigrations } from '../../src/storage/migration'
 import { KV, LEGACY, MIGRATION_VERSION } from '../../src/storage/keys'
+import { makeKvMock, type MockEnv } from './kv-mock'
 
-async function clearAll() {
-  const list = await env.STORAGE.list()
-  for (const k of list.keys) await env.STORAGE.delete(k.name)
-}
+let env: MockEnv
+
+beforeEach(() => { env = makeKvMock() })
 
 describe('storage/migration', () => {
-  beforeEach(async () => { await clearAll() })
-
   it('迁移密码、Telegram、GitHub、通知开关', async () => {
-    // admin123 的 SHA-256
-    const adminSha = 'b4b9b935a6db4d3d27d76b25ec0e2a45e6e1e8e6f7c8c8e7d8c8e7d8c8e7d8c8'
-    // 用真实的 admin123 哈希
     const data = new TextEncoder().encode('admin123')
     const hash = await crypto.subtle.digest('SHA-256', data)
     const hashHex = Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -493,7 +480,6 @@ describe('storage/migration', () => {
     })
     expect(await env.STORAGE.get(KV.MIGRATION_VERSION)).toBe(MIGRATION_VERSION)
 
-    // 旧键应被删除
     expect(await env.STORAGE.get(LEGACY.PASSWORD_HASH)).toBeNull()
     expect(await env.STORAGE.get(LEGACY.TG_BOT_TOKEN)).toBeNull()
     expect(await env.STORAGE.get(LEGACY.GITHUB_TOKEN)).toBeNull()
@@ -558,13 +544,57 @@ describe('storage/migration', () => {
 })
 ```
 
-- [ ] **Step 2.3.2: 跑测试，确认所有用例 FAIL**
+- [ ] **Step 2.3.2: 写入 `test/unit/kv-mock.ts`**
+
+```ts
+import type { Env } from '../../src/env'
+
+export type MockEnv = Env
+
+export function makeKvMock(): MockEnv {
+  const store = new Map<string, { value: string; expiresAt?: number }>()
+
+  const ns = {
+    async get(key: string, type?: 'text' | 'json') {
+      const entry = store.get(key)
+      if (!entry) return null
+      if (entry.expiresAt && entry.expiresAt < Date.now()) {
+        store.delete(key)
+        return null
+      }
+      return type === 'json' ? JSON.parse(entry.value) : entry.value
+    },
+    async put(key: string, value: string, opts?: { expirationTtl?: number }) {
+      const expiresAt = opts?.expirationTtl
+        ? Date.now() + opts.expirationTtl * 1000
+        : undefined
+      const entry: { value: string; expiresAt?: number } = expiresAt
+        ? { value, expiresAt }
+        : { value }
+      store.set(key, entry)
+    },
+    async delete(key: string) {
+      store.delete(key)
+    },
+    async list({ prefix }: { prefix?: string; cursor?: string } = {}) {
+      const keys = [...store.keys()]
+        .filter((k) => !prefix || k.startsWith(prefix))
+        .map((name) => ({ name }))
+      return { keys, list_complete: true, cursor: undefined as string | undefined }
+    },
+  } as unknown as KVNamespace
+
+  return { STORAGE: ns }
+}
+```
+
+- [ ] **Step 2.3.3: 跑测试，确认 RED**
 
 ```bash
 npm run test -- migration
 ```
 
-Expected: 报告找不到 `runMigrations` —— 因为还未实现。
+Expected: 找不到 `runMigrations` 模块 —— 还未实现。
 
 ### Step 2.4 实现迁移
 
@@ -770,7 +800,7 @@ Expected: 全绿。
 - [ ] **Step 2.5.3: 提交**
 
 ```bash
-git add src/storage test/integration/migration.test.ts
+git add src/storage test/unit/kv-mock.ts test/unit/migration.test.ts
 git commit -m "$(cat <<'EOF'
 feat(storage): 重新设计 KV 键并实现自动迁移
 
@@ -778,9 +808,10 @@ feat(storage): 重新设计 KV 键并实现自动迁移
 runMigrations 在 fetch 中间件与 scheduled 入口均会触发，幂等，
 不丢数据，通过 migration:version 跳过已完成版本。
 
-包含 7 项集成测试覆盖：密码迁移、默认密码标志、Telegram/GitHub 合并、
-通知开关、仓库列表 + addedAt、last_commit_* 扁平化为 repos:state:*、
-HMAC secret 生成与保留、二次启动幂等、缺失旧键不报错。
+包含 7 项单元测试 + 手写 KV mock 覆盖：密码迁移、默认密码标志、
+Telegram/GitHub 合并、通知开关、仓库列表 + addedAt、
+last_commit_* 扁平化为 repos:state:*、HMAC secret 生成与保留、
+二次启动幂等、缺失旧键不报错。
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -1003,14 +1034,15 @@ Expected: 9 个测试 PASS。
 - [ ] **Step 3.3.1: 写测试 `test/unit/session.test.ts`**
 
 ```ts
-import { env } from 'cloudflare:test'
 import { describe, expect, it, beforeEach } from 'vitest'
+import { makeKvMock, type MockEnv } from './kv-mock'
 import { createSession, verifySessionCookie, deleteSessionCookie, buildSessionCookie } from '../../src/auth/session'
 import { KV } from '../../src/storage/keys'
 
+let env: MockEnv
+
 beforeEach(async () => {
-  const list = await env.STORAGE.list()
-  for (const k of list.keys) await env.STORAGE.delete(k.name)
+  env = makeKvMock()
   await env.STORAGE.put(KV.HMAC_SECRET, 'test-secret')
 })
 
@@ -1165,13 +1197,14 @@ Expected: 7 个测试 PASS。
 - [ ] **Step 3.4.1: 写测试 `test/unit/rate-limit.test.ts`**
 
 ```ts
-import { env } from 'cloudflare:test'
 import { describe, expect, it, beforeEach } from 'vitest'
+import { makeKvMock, type MockEnv } from './kv-mock'
 import { recordFailure, clearAttempts, isLockedOut } from '../../src/auth/rate-limit'
 
-beforeEach(async () => {
-  const list = await env.STORAGE.list()
-  for (const k of list.keys) await env.STORAGE.delete(k.name)
+let env: MockEnv
+
+beforeEach(() => {
+  env = makeKvMock()
 })
 
 describe('auth/rate-limit', () => {
@@ -2551,7 +2584,7 @@ EOF
 
 ---
 
-## Phase 8: Routes 接入 + 集成测试 auth-flow
+## Phase 8: Routes 接入
 
 **Files:**
 - Create: `src/routes/index.ts` (re-export)
@@ -2561,7 +2594,6 @@ EOF
 - Create: `src/routes/settings.ts`
 - Create: `src/routes/system.ts`
 - Modify: `src/index.ts`
-- Create: `test/integration/auth-flow.test.ts`
 
 ### Step 8.1 routes/auth.ts
 
@@ -2955,148 +2987,25 @@ export default {
 }
 ```
 
-### Step 8.8 集成测试 auth-flow
+### Step 8.8 校验 + 提交
 
-- [ ] **Step 8.8.1: 写入 `test/integration/auth-flow.test.ts`**
-
-```ts
-import { env, SELF } from 'cloudflare:test'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { KV } from '../../src/storage/keys'
-
-async function clearAll() {
-  const list = await env.STORAGE.list()
-  for (const k of list.keys) await env.STORAGE.delete(k.name)
-}
-
-function extractSessionCookie(setCookie: string | null): string | null {
-  if (!setCookie) return null
-  const m = setCookie.match(/session=([^;]+)/)
-  return m ? `session=${m[1]}` : null
-}
-
-describe('auth flow integration', () => {
-  beforeEach(async () => { await clearAll() })
-
-  it('未登录访问 / 跳到 /login', async () => {
-    const r = await SELF.fetch('http://x/', { redirect: 'manual' })
-    expect(r.status).toBe(302)
-    expect(r.headers.get('Location')).toBe('/login')
-  })
-
-  it('默认密码登录成功 → 强制跳改密页', async () => {
-    const r1 = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123',
-      redirect: 'manual',
-    })
-    expect(r1.status).toBe(302)
-    const cookie = extractSessionCookie(r1.headers.get('Set-Cookie'))
-    expect(cookie).toBeTruthy()
-    const r2 = await SELF.fetch('http://x/', {
-      headers: { Cookie: cookie! }, redirect: 'manual',
-    })
-    expect(r2.status).toBe(302)
-    expect(r2.headers.get('Location')).toBe('/settings/password?forced=1')
-  })
-
-  it('错密码 5 次后锁定', async () => {
-    for (let i = 0; i < 5; i++) {
-      await SELF.fetch('http://x/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'password=wrong',
-      })
-    }
-    const r = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123',
-    })
-    expect(r.status).toBe(429)
-  })
-
-  it('记住我勾选时 cookie 带 Max-Age', async () => {
-    const r = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123&remember_me=on',
-      redirect: 'manual',
-    })
-    expect(r.headers.get('Set-Cookie')).toContain('Max-Age=604800')
-  })
-
-  it('未勾选记住我时 cookie 无 Max-Age', async () => {
-    const r = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123',
-      redirect: 'manual',
-    })
-    const sc = r.headers.get('Set-Cookie')
-    expect(sc).toContain('HttpOnly')
-    expect(sc).not.toMatch(/Max-Age=\d+/)
-  })
-
-  it('登出后 cookie 失效', async () => {
-    const r1 = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123', redirect: 'manual',
-    })
-    const cookie = extractSessionCookie(r1.headers.get('Set-Cookie'))!
-    await SELF.fetch('http://x/logout', {
-      method: 'POST', headers: { Cookie: cookie }, redirect: 'manual',
-    })
-    const r2 = await SELF.fetch('http://x/', { headers: { Cookie: cookie }, redirect: 'manual' })
-    expect(r2.status).toBe(302)
-    expect(r2.headers.get('Location')).toBe('/login')
-  })
-
-  it('改密后强制标志清除，登录回到首页', async () => {
-    // 登录
-    const r1 = await SELF.fetch('http://x/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'password=admin123', redirect: 'manual',
-    })
-    const cookie = extractSessionCookie(r1.headers.get('Set-Cookie'))!
-    // 改密
-    await SELF.fetch('http://x/settings/password', {
-      method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'forced=1&current_password=admin123&new_password=newpw1234&confirm_password=newpw1234',
-      redirect: 'manual',
-    })
-    expect(await env.STORAGE.get(KV.MUST_CHANGE_PASSWORD)).toBeNull()
-    const r3 = await SELF.fetch('http://x/', { headers: { Cookie: cookie }, redirect: 'manual' })
-    expect(r3.status).toBe(200)
-  })
-})
-```
-
-### Step 8.9 校验 + 提交
-
-- [ ] **Step 8.9.1: typecheck + 全量测试**
+- [ ] **Step 8.8.1: typecheck + 全量测试**
 
 ```bash
 npm run typecheck && npm run test
 ```
 
-Expected: 全部通过（含 7 个 auth-flow 集成测试）。
+Expected: 全部通过。
 
-- [ ] **Step 8.9.2: 提交**
+- [ ] **Step 8.8.2: 提交**
 
 ```bash
-git add src/routes src/index.ts test/integration/auth-flow.test.ts
+git add src/routes src/index.ts
 git commit -m "$(cat <<'EOF'
 feat(routes): 接入 auth/dashboard/repos/settings/system 路由
 
 src/index.ts 接入所有路由 + 启动迁移中间件。POST /login 实现
-首次默认密码初始化、限流、签名 session、记住我。包含 7 个 auth-flow
-集成测试覆盖：未登录跳转、默认密码强制改密、错密码限流、记住我
-cookie 差异、登出 cookie 失效、改密后标志清除。
+首次默认密码初始化、限流、签名 session、记住我。
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -3121,16 +3030,17 @@ EOF
 - [ ] **Step 9.1.1: 写入 `test/unit/fork-detector.test.ts`**
 
 ```ts
-import { env } from 'cloudflare:test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { makeKvMock, type MockEnv } from './kv-mock'
 import { detectFork } from '../../src/services/fork-detector'
 import { GitHubClient } from '../../src/services/github'
 import { KV } from '../../src/storage/keys'
 
-beforeEach(async () => {
+let env: MockEnv
+
+beforeEach(() => {
   vi.restoreAllMocks()
-  const list = await env.STORAGE.list()
-  for (const k of list.keys) await env.STORAGE.delete(k.name)
+  env = makeKvMock()
 })
 
 function fakeFetch(handlers: Array<{ match: RegExp; body: any; status?: number }>) {
@@ -3885,7 +3795,6 @@ wrangler tail
 
 到此所有 Phase 完成。最终 git 历史应有约 10 个原子提交，每个都通过 `typecheck + test`。
 
-总测试数（单元 + 集成）：
-- 集成：migration (7) + auth-flow (7) = 14
-- 单元：crypto (5) + password (4) + session (7) + rate-limit (4) + message-builder (8) + fork-detector (7) = 35
-- **合计：49 个测试**
+总测试数（仅单元测试，集成测试已取消）：
+- migration (7) + crypto (5) + password (4) + session (7) + rate-limit (4) + message-builder (8) + fork-detector (7) = 42
+- **合计：42 个测试**
