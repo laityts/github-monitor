@@ -123,7 +123,10 @@ app.route('/', r.system)
 export default {
   fetch: app.fetch,
   scheduled: (event: ScheduledEvent, env: Env, ctx: ExecutionContext) =>
-    ctx.waitUntil(runCron(env)),
+    ctx.waitUntil((async () => {
+      await runMigrations(env)   // 兜底：首次 cron 早于任何 HTTP 请求时也能迁移
+      await runCron(env)
+    })()),
 }
 ```
 
@@ -188,10 +191,12 @@ export async function runMigrations(env: Env) {
 ```
 
 **性质**：
-- 通过 `migration:version` 标记**幂等**
-- **原子性边界**：每个 migrate* 函数内部「先 put 新键 → 再 delete 旧键」，断电情况下不丢数据
-- **可观察**：`console.log` 打印每步进度
-- **触发点**：每次请求进入时检测（成本：1 次 KV get）
+- **幂等**：每个 `migrate*` 函数都用「读新键，如果已存在则跳过；否则读旧键，写入新键」的模式。即使 `migration:version` 未写入（任何步骤中途失败），下次运行重做所有 `migrate*` 不会破坏已迁移的数据。
+- **不丢数据**：每个 `migrate*` 内部「先 put 新键 → 再 delete 旧键」。put 成功 / delete 失败的情况下，下次运行从新键读到值会跳过 put，再次尝试 delete（幂等）。
+- **可观察**：`console.log` 打印每步进度，wrangler tail 可见。
+- **触发点**：
+  - `fetch` 中间件每次请求触发（成本：1 次 KV get）
+  - `scheduled` 入口同样触发，兜底新部署后首次 cron 早于 HTTP 请求的场景
 
 ## 5. 认证
 
@@ -450,7 +455,9 @@ export async function runCron(env: Env): Promise<CronLog> {
 
 ### Cron 通知开关行为
 
-保持现状不变。
+保持现状不变。明确现状：
+- `cronEnabled = true`（默认）：每次 cron 执行都发一条「定时任务报告」到 Telegram。
+- `cronEnabled = false`：跳过定时任务报告。**仓库更新通知（commit 推送）与错误通知不受此开关影响，始终发送**（前提是 Telegram 已配置）。
 
 ## 9. 测试
 
@@ -583,7 +590,7 @@ export default defineWorkersConfig({
 ## 13. 验收清单
 
 - [ ] 浏览器访问 `/` 渲染 dashboard，未登录时跳 `/login`
-- [ ] 用旧密码登录后被强制跳改密页
+- [ ] 用默认密码 `admin123` 登录后被强制跳改密页（前提：线上当前仍使用默认密码）
 - [ ] 改密后 cookie 仍有效，回到 dashboard
 - [ ] 「记住我」勾选时 cookie 有 `Max-Age`，不勾选时无
 - [ ] 5 次错密码后锁定，显示剩余时间
