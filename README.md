@@ -44,39 +44,25 @@
 - **🔑 GitHub Token 支持** - 显著提升 API 调用频率限制
 - **🌐 边缘计算** - 利用 Cloudflare 全球网络实现快速响应
 
+## 🛠 本地开发
+
+```bash
+npm install
+npm run dev              # 本地启动 wrangler dev
+npm run typecheck        # TypeScript 校验
+npm run test             # 跑全部测试
+npm run deploy           # 部署到 Cloudflare Workers
+```
+
+需要 Node.js ≥ 20。
+
 ## 🚀 快速部署
 
-### 方式 A：网页控制台部署（推荐新手）
+### 方式 A：网页控制台部署（适合不安装 CLI 的用户）
 
-<details>
-<summary><b>📝 点击展开详细部署步骤</b></summary>
-
-#### 1. 创建 Worker
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 进入 **Workers & Pages** → **Create Application** → **Create Worker**
-3. 命名为 `github-monitor`，点击 **Deploy**
-
-#### 2. 导入代码
-1. 点击 **Edit code**
-2. 将 `worker.js` 的内容完全复制并覆盖编辑器中的现有代码
-3. 点击右上角的 **Save and deploy**
-
-#### 3. 创建并绑定 KV（关键步骤！）
-1. 回到 Worker 的配置页面，点击左侧菜单的 **KV**
-2. 点击 **Create a Namespace**，命名为 `GITHUB_MONITOR_KV`，点击 **Add**
-3. 进入 Worker 的 **Settings** → **Variables**
-4. 向下滚动到 **KV Namespace Bindings**，点击 **Add binding**
-   - **Variable name**: `STORAGE`（必须完全一致，注意大写）
-   - **KV Namespace**: 选择刚才创建的 `GITHUB_MONITOR_KV`
-5. 点击 **Save and deploy**
-
-#### 4. 设置定时任务
-1. 进入 **Triggers** 选项卡
-2. 在 **Cron Triggers** 部分点击 **Add Cron Trigger**
-3. 设置频率（例如每 30 分钟：`*/30 * * * *`）
-4. 点击 **Add Trigger**
-
-</details>
+⚠️ v2.0.0 起 worker 已重构为 TypeScript 多文件，**不能直接复制单文件到网页控制台**。
+推荐使用方式 B（CLI）。如确需网页部署，请先 `npm run deploy --dry-run`
+或 `wrangler deploy --dry-run` 拿到 bundle 单文件再粘贴。
 
 ### 方式 B：Wrangler CLI 部署（开发者推荐）
 
@@ -150,6 +136,10 @@ https://github-monitor.your-name.workers.dev
 | `Telegram Bot Token` | 机器人密钥 | 在 Telegram 联系 [@BotFather](https://t.me/BotFather) 发送 `/newbot` 创建 |
 | `Telegram Chat ID` | 接收消息的 ID | 向您的机器人发送任意消息，然后访问 `https://api.telegram.org/bot<TOKEN>/getUpdates` 查看 |
 | `GitHub Token` | (可选但推荐) API 令牌 | 在 [GitHub Developer Settings](https://github.com/settings/tokens) 生成 Classic Token |
+
+> ⚠️ **GitHub Token 权限**：
+> - 只读监控：无需特殊权限（公开仓库）或 `public_repo`（私有仓库）
+> - **「同步上游」与「Fork 此仓库」功能**：需要 `repo` 或 `public_repo` 权限
 
 <details>
 <summary><b>ℹ️ 为什么需要 GitHub Token？</b></summary>
