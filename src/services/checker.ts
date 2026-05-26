@@ -7,6 +7,8 @@ import { TelegramClient, buildCommitNotification, buildErrorMessage } from './te
 import { formatShanghai } from '../lib/time'
 import { resolveUsername } from './username'
 import { detectFork } from './fork-detector'
+import { KV } from '../storage/keys'
+import type { ForkSummary } from './telegram'
 
 export type CheckResult = {
   success: boolean
@@ -34,7 +36,6 @@ export async function runCheck(env: Env): Promise<CheckResult> {
   const client = new GitHubClient(gh?.token)
   const telegram = tg && tg.botToken && tg.chatId
     ? new TelegramClient(tg.botToken, tg.chatId) : null
-
   let checked = 0, updated = 0, errors = 0
   let username: string | null | undefined
 
@@ -65,9 +66,7 @@ export async function runCheck(env: Env): Promise<CheckResult> {
 
       if (telegram && between.commits.length > 0) {
         if (username === undefined) username = await resolveUsername(env)
-        const fork = username
-          ? await detectFork(env, client, username, repo.owner, repo.repo, repo.branch)
-          : undefined
+        const fork = await getForkSummary(env, client, username, repo.owner, repo.repo, repo.branch)
         const msg = buildCommitNotification(repo, between.commits, between.isComplete, fork)
         try { await telegram.send(msg) } catch (err) {
           console.error('Telegram 发送失败:', err)
@@ -91,4 +90,19 @@ export async function runCheck(env: Env): Promise<CheckResult> {
   const message = `检查完成: 已检查 ${checked} 个仓库，发现 ${updated} 个更新，${errors} 个错误`
   console.log(`✅ ${message}`)
   return { success: true, message, checkedCount: checked, updatedCount: updated, errorCount: errors }
+}
+
+async function getForkSummary(
+  env: Env,
+  client: GitHubClient,
+  username: string | null,
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<ForkSummary | undefined> {
+  if (username) return detectFork(env, client, username, owner, repo, branch)
+
+  const cached = await env.STORAGE.get(KV.forkCacheKey(owner, repo), 'json') as { forkFullName: string | null } | null
+  if (!cached?.forkFullName) return undefined
+  return { exists: true, fullName: cached.forkFullName, behind: 0 }
 }
