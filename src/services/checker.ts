@@ -5,6 +5,8 @@ import { setLastCheckTime } from '../storage/cron-log'
 import { GitHubClient } from './github'
 import { TelegramClient, buildCommitNotification, buildErrorMessage } from './telegram'
 import { formatShanghai } from '../lib/time'
+import { resolveUsername } from './username'
+import { detectFork } from './fork-detector'
 
 export type CheckResult = {
   success: boolean
@@ -34,6 +36,7 @@ export async function runCheck(env: Env): Promise<CheckResult> {
     ? new TelegramClient(tg.botToken, tg.chatId) : null
 
   let checked = 0, updated = 0, errors = 0
+  let username: string | null | undefined
 
   for (const repo of repoList) {
     try {
@@ -61,7 +64,11 @@ export async function runCheck(env: Env): Promise<CheckResult> {
       }
 
       if (telegram && between.commits.length > 0) {
-        const msg = buildCommitNotification(repo, between.commits, between.isComplete)
+        if (username === undefined) username = await resolveUsername(env)
+        const fork = username
+          ? await detectFork(env, client, username, repo.owner, repo.repo, repo.branch)
+          : undefined
+        const msg = buildCommitNotification(repo, between.commits, between.isComplete, fork)
         try { await telegram.send(msg) } catch (err) {
           console.error('Telegram 发送失败:', err)
         }

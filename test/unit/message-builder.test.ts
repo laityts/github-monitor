@@ -45,7 +45,17 @@ describe('buildCommitNotification', () => {
       repo, [commit('abc1234', 'fix bug')], true,
       { exists: true, behind: 5, fullName: 'laityts/next.js' } as any,
     )
+    expect(m).toContain('<a href="https://github.com/laityts/next.js">laityts/next.js</a>')
     expect(m).toContain('你的 fork 落后 5')
+  })
+
+  it('fork 存在时同时显示上游仓库和自己的仓库', () => {
+    const m = buildCommitNotification(
+      repo, [commit('abc1234', 'fix bug')], true,
+      { exists: true, behind: 0, fullName: 'laityts/my-next' } as any,
+    )
+    expect(m).toContain('<a href="https://github.com/vercel/next.js">vercel/next.js</a>')
+    expect(m).toContain('<a href="https://github.com/laityts/my-next">laityts/my-next</a>')
   })
 })
 

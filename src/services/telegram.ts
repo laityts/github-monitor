@@ -75,8 +75,13 @@ export function buildCommitNotification(
     }
   }
 
-  if (fork && 'exists' in fork && fork.exists && fork.behind > 0) {
-    m += `💡 <b>你的 fork 落后 ${fork.behind} commit</b>（<code>${fork.fullName}</code>）\n\n`
+  if (fork && 'exists' in fork && fork.exists) {
+    const forkUrl = `https://github.com/${fork.fullName}`
+    m += `🍴 <b>我的仓库:</b> <a href="${forkUrl}">${fork.fullName}</a>\n`
+    if (fork.behind > 0) {
+      m += `💡 <b>你的 fork 落后 ${fork.behind} commit</b>\n`
+    }
+    m += '\n'
   }
 
   m += `<a href="${repoUrl}/commits/${repo.branch}">查看完整提交历史</a>`
